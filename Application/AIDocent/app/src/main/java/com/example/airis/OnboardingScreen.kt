@@ -11,11 +11,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import com.example.airis.ui.theme.PretendardFamily
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.airis.ui.theme.PretendardFamily
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -45,12 +48,19 @@ fun OnboardingScreen(onStartClick: () -> Unit) {
                 Text(
                     text = "예술을 더 가까이",
                     fontSize = 24.sp,
-                    fontWeight = FontWeight.SemiBold
+                    //style = MaterialTheme.typography.displaySmall
+                    fontWeight = FontWeight.SemiBold,
+                    //fontFamily = PretendardFamily
                 )
+
+                Spacer(modifier = Modifier.height(5.dp))
+
                 Text(
                     text = "AI가 들려주는 작품 이야기",
                     fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold
+                    //style = MaterialTheme.typography.displayMedium
+                    fontWeight = FontWeight.Bold,
+                    //fontFamily = PretendardFamily
                 )
             }
 
@@ -68,8 +78,8 @@ fun OnboardingScreen(onStartClick: () -> Unit) {
                     size = 196.dp,
                     frequencyX = 0.0008f,
                     frequencyY = 0.001f,
-                    amplitudeX = 3f,
-                    amplitudeY = 5f,
+                    amplitudeX = 2.5f,
+                    amplitudeY = 4.5f,
                     phaseX = 0f,
                     phaseY = 0f,
                     baseOffsetX = (-20).dp,
@@ -83,8 +93,8 @@ fun OnboardingScreen(onStartClick: () -> Unit) {
                     size = 116.dp,
                     frequencyX = 0.0008f,
                     frequencyY = 0.001f,
-                    amplitudeX = 3f,
-                    amplitudeY = 5f,
+                    amplitudeX = 2f,
+                    amplitudeY = 3f,
                     phaseX = 2.2f,
                     phaseY = 1.5f,
                     baseOffsetX = 60.dp,
@@ -118,7 +128,11 @@ fun OnboardingScreen(onStartClick: () -> Unit) {
                         contentColor = Color.Black
                     )
                 ) {
-                    Text("시작하기", fontWeight = FontWeight.Medium)
+                    Text(
+                        text = "시작하기",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium
+                    )
                 }
             }
         }
