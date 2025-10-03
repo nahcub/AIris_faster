@@ -106,7 +106,6 @@ fun OnboardingScreen(onStartClick: () -> Unit) {
 
             // 하단 영역
             Column(
-                modifier = Modifier.padding(bottom = 40.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Image(
@@ -114,9 +113,16 @@ fun OnboardingScreen(onStartClick: () -> Unit) {
                     contentDescription = "로고",
                     modifier = Modifier.size(104.dp, 25.dp)
                 )
+            }
 
-                Spacer(modifier = Modifier.height(24.dp))
-
+            Column (
+                modifier = Modifier
+                    .padding(
+                        top = 24.dp,
+                        bottom = 40.dp)
+                    .fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
                 Button(
                     onClick = onStartClick,
                     modifier = Modifier

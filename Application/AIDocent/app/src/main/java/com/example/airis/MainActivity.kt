@@ -50,7 +50,7 @@ fun AppNavigation() {
             MainScreen(
                 onStartClick = {
                     // "눌러서 연결하기" 버튼 클릭 시
-                    // TODO: 다음 화면으로 이동
+                    // 다음 화면으로 이동
                 }
             )
         }
