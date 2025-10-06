@@ -20,9 +20,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-fun MainScreen(onStartClick: () -> Unit) {
-    var isConnected by remember { mutableStateOf(false) }
-
+fun MainScreen(isConnected: Boolean = false,  // 파라미터로 받기
+               onConnectionChange: (Boolean) -> Unit = {},  // 상태 변경 콜백
+               onStartClick: () -> Unit,
+               onHistoryClick: () -> Unit = {}) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -33,15 +34,15 @@ fun MainScreen(onStartClick: () -> Unit) {
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 24.dp),
+                .padding(horizontal = 20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            //Spacer(modifier = Modifier.height(48.dp))
+            Spacer(modifier = Modifier.height(24.dp))
 
             // "나의 안경" 텍스트 영역 - 고정된 높이 확보
             Box(
-                modifier = Modifier.height(48.dp),
-                contentAlignment = Alignment.BottomCenter
+                modifier = Modifier.height(36.dp),
+                contentAlignment = Alignment.Center
             ) {
                 if (isConnected) {
                     Text(
@@ -53,7 +54,7 @@ fun MainScreen(onStartClick: () -> Unit) {
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            //Spacer(modifier = Modifier.height(16.dp))
 
             // 안경 이미지
             Image(
@@ -62,7 +63,7 @@ fun MainScreen(onStartClick: () -> Unit) {
                 modifier = Modifier.size(192.dp)
             )
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             // 연결 상태
             Box(
@@ -177,7 +178,8 @@ fun MainScreen(onStartClick: () -> Unit) {
             MenuBox(
                 title = "마이 히스토리",
                 description = "지금까지 관람한 작품들을\n확인해보세요",
-                iconRes = R.drawable.main_myhistory
+                iconRes = R.drawable.main_myhistory,
+                onClick = onHistoryClick
             )
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -185,7 +187,7 @@ fun MainScreen(onStartClick: () -> Unit) {
             // 연결 버튼
             Button(
                 onClick = {
-                    isConnected = !isConnected
+                    onConnectionChange(!isConnected)  // 상태 변경
                     onStartClick()
                 },
                 modifier = Modifier
@@ -212,7 +214,8 @@ private fun MenuBox(
     title: String,
     description: String,
     iconRes: Int,
-    enabled: Boolean = true
+    enabled: Boolean = true,
+    onClick: () -> Unit = {}
 ) {
     Box(
         modifier = Modifier
@@ -223,7 +226,7 @@ private fun MenuBox(
                 color = Color(0xFFF0F0F0),
                 shape = RoundedCornerShape(16.dp)
             )
-            .clickable(enabled = enabled) {  }
+            .clickable(enabled = enabled) { onClick() }
     ) {
         Row(
             modifier = Modifier
@@ -267,6 +270,8 @@ private fun MenuBox(
 fun MainScreenPreview() {
     MaterialTheme {
         MainScreen(
+            isConnected = false,
+            onConnectionChange = {},
             onStartClick = { }
         )
     }
