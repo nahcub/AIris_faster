@@ -20,10 +20,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-fun MainScreen(isConnected: Boolean = false,  // 파라미터로 받기
-               onConnectionChange: (Boolean) -> Unit = {},  // 상태 변경 콜백
-               onStartClick: () -> Unit,
-               onHistoryClick: () -> Unit = {}) {
+fun MainScreen(
+    isConnected: Boolean = false,
+    batteryLevel: Int = 98,
+    onConnectionChange: (Boolean) -> Unit = {},
+    onStartClick: () -> Unit,
+    onHistoryClick: () -> Unit = {},
+    onCameraTestClick: () -> Unit = {}
+) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -39,7 +43,7 @@ fun MainScreen(isConnected: Boolean = false,  // 파라미터로 받기
         ) {
             Spacer(modifier = Modifier.height(24.dp))
 
-            // "나의 안경" 텍스트 영역 - 고정된 높이 확보
+            // "나의 안경" 텍스트 영역
             Box(
                 modifier = Modifier.height(36.dp),
                 contentAlignment = Alignment.Center
@@ -53,8 +57,6 @@ fun MainScreen(isConnected: Boolean = false,  // 파라미터로 받기
                     )
                 }
             }
-
-            //Spacer(modifier = Modifier.height(16.dp))
 
             // 안경 이미지
             Image(
@@ -111,7 +113,7 @@ fun MainScreen(isConnected: Boolean = false,  // 파라미터로 받기
                         Spacer(modifier = Modifier.width(8.dp))
 
                         Text(
-                            text = "98 %",
+                            text = "$batteryLevel %",
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Medium
                         )
@@ -169,7 +171,8 @@ fun MainScreen(isConnected: Boolean = false,  // 파라미터로 받기
                 title = "카메라 테스트",
                 description = "카메라가 작품을 제대로\n인식하는지 확인해보세요",
                 iconRes = R.drawable.main_cameratest,
-                enabled = isConnected
+                enabled = isConnected,
+                onClick = onCameraTestClick
             )
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -186,10 +189,7 @@ fun MainScreen(isConnected: Boolean = false,  // 파라미터로 받기
 
             // 연결 버튼
             Button(
-                onClick = {
-                    onConnectionChange(!isConnected)  // 상태 변경
-                    onStartClick()
-                },
+                onClick = onStartClick,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(50.dp),
@@ -271,6 +271,7 @@ fun MainScreenPreview() {
     MaterialTheme {
         MainScreen(
             isConnected = false,
+            batteryLevel = 98,
             onConnectionChange = {},
             onStartClick = { }
         )
