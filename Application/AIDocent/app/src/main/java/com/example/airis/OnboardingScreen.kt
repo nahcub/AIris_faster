@@ -24,7 +24,7 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 
 @Composable
-fun OnboardingScreen(onStartClick: () -> Unit) {
+fun OnboardingScreen(onStartClick: () -> Unit, onLlamaTestClick: () -> Unit = {}) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -140,6 +140,26 @@ fun OnboardingScreen(onStartClick: () -> Unit) {
                         fontWeight = FontWeight.Medium
                     )
                 }
+                
+                Spacer(modifier = Modifier.height(12.dp))
+                
+                Button(
+                    onClick = onLlamaTestClick,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFE0E0E0),
+                        contentColor = Color.Black
+                    )
+                ) {
+                    Text(
+                        text = "LLM 테스트하기",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
             }
         }
     }
@@ -212,7 +232,8 @@ fun FloatingImage(
 fun OnboardingScreenPreview() {
     MaterialTheme {
         OnboardingScreen(
-            onStartClick = { }
+            onStartClick = { },
+            onLlamaTestClick = { }
         )
     }
 }

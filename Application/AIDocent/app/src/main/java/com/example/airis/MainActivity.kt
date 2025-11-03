@@ -46,6 +46,9 @@ fun AppNavigation() {
                     navController.navigate("home") {
                         popUpTo("onboarding") { inclusive = true }  // 뒤로가기 방지
                     }
+                },
+                onLlamaTestClick = {
+                    navController.navigate("llama_test")
                 }
             )
         }
@@ -67,6 +70,15 @@ fun AppNavigation() {
         // 마이 히스토리 화면
         composable("myhistory") {
             MyHistoryScreen(
+                onBackClick = {
+                    navController.popBackStack()
+                }
+            )
+        }
+
+        // LLM 테스트 화면
+        composable("llama_test") {
+            LlamaScreen(
                 onBackClick = {
                     navController.popBackStack()
                 }
