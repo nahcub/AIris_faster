@@ -13,5 +13,18 @@ object NativeBridge {
     }
 
     external fun loadModel(path: String): Boolean
-    external fun generate(prompt: String): String
+
+    // Session management (performance optimized)
+    external fun initSession(): Boolean
+    external fun closeSession()
+
+    // Streaming generation with real-time callback
+    external fun generateStreaming(prompt: String, onToken: (String) -> Unit): Boolean
+
+    // Generation performance statistics
+    data class GenerationStats(
+        val totalTokens: Int,
+        val totalTimeSeconds: Double,
+        val tokensPerSecond: Double
+    )
 }
