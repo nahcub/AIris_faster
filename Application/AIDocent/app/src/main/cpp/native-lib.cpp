@@ -18,7 +18,6 @@ static llama_context* ctx = nullptr;
 
 // Session management
 static llama_sampler* session_sampler = nullptr;
-static int session_n_threads = 0;
 static bool session_initialized = false;
 
 // Load pre-trained Transformer model from file
@@ -59,12 +58,12 @@ Java_com_example_airis_NativeBridge_initSession(JNIEnv* env, jobject /* this */)
     LOGI("Initializing generation session...");
 
     // Configure threads: reserve 2 cores for system
-    session_n_threads = std::max(1, std::min(8, (int) sysconf(_SC_NPROCESSORS_ONLN) - 2));
-    LOGI("Using %d threads", session_n_threads);
+    int n_threads = std::max(1, std::min(8, (int) sysconf(_SC_NPROCESSORS_ONLN) - 2));
+    LOGI("Using %d threads", n_threads);
 
     llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_threads = session_n_threads;
-    ctx_params.n_threads_batch = session_n_threads;
+    ctx_params.n_threads = n_threads;
+    ctx_params.n_threads_batch = n_threads;
     ctx_params.n_ctx = 2048;
     ctx_params.n_batch = 2048;
 
@@ -81,8 +80,6 @@ Java_com_example_airis_NativeBridge_initSession(JNIEnv* env, jobject /* this */)
 
     // Initialize sampler chain
     auto smpl_params = llama_sampler_chain_default_params();
-    smpl_params.no_perf = true;
-
     session_sampler = llama_sampler_chain_init(smpl_params);
     if (!session_sampler) {
         LOGE("Failed to initialize sampler");
@@ -153,19 +150,22 @@ Java_com_example_airis_NativeBridge_generateStreaming(JNIEnv* env, jobject /* th
 
     // Tokenize prompt
     std::vector<llama_token> tokens;
-
     const char* prompt = full_prompt.c_str();
+
+    // First call to get required token count
     int n_tokens = llama_tokenize(vocab, prompt, strlen(prompt), nullptr, 0, false, false);
-    if (n_tokens < 0) {
-        tokens.resize(-n_tokens);
-        n_tokens = llama_tokenize(vocab, prompt, strlen(prompt), tokens.data(), tokens.size(), false, false);
-    } else {
-        tokens.resize(n_tokens);
-        n_tokens = llama_tokenize(vocab, prompt, strlen(prompt), tokens.data(), tokens.size(), false, false);
+    if (n_tokens <= 0) {
+        LOGE("Failed to tokenize prompt or empty tokens: %d", n_tokens);
+        env->ReleaseStringUTFChars(prompt_, user_prompt);
+        return JNI_FALSE;
     }
 
-    if (n_tokens < 0 || n_tokens == 0) {
-        LOGE("Failed to tokenize prompt or empty tokens: %d", n_tokens);
+    // Second call with allocated buffer
+    tokens.resize(n_tokens);
+    n_tokens = llama_tokenize(vocab, prompt, strlen(prompt), tokens.data(), tokens.size(), false, false);
+
+    if (n_tokens <= 0) {
+        LOGE("Failed to tokenize prompt: %d", n_tokens);
         env->ReleaseStringUTFChars(prompt_, user_prompt);
         return JNI_FALSE;
     }
