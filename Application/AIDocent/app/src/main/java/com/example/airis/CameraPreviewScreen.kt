@@ -1,3 +1,4 @@
+/*
 package com.example.airis
 
 import android.graphics.Bitmap
@@ -391,6 +392,311 @@ fun CameraPreview_Image_Preview() {
         isStreaming = true,
         errorMessage = null,
         onStreamButtonClick = {},
+        onBackClick = {}
+    )
+}
+*/
+
+package com.example.airis
+
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
+
+// --- 1. 상태 관리와 로직을 담당하는 Composable ---
+
+@Composable
+fun CameraPreviewScreen(
+    onBackClick: () -> Unit = {}
+) {
+    var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var isCapturing by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    val coroutineScope = rememberCoroutineScope()
+
+    // 분리된 UI Composable을 호출하여 현재 상태를 전달
+    CameraPreviewContent(
+        previewBitmap = previewBitmap,
+        isCapturing = isCapturing,
+        errorMessage = errorMessage,
+        onCaptureButtonClick = {
+            isCapturing = true
+            errorMessage = null
+
+            coroutineScope.launch {
+                captureSnapshot(
+                    url = "http://192.168.4.1:80/snapshot",
+                    onSuccess = { bitmap ->
+                        previewBitmap = bitmap
+                        isCapturing = false
+                    },
+                    onError = { error ->
+                        errorMessage = error
+                        isCapturing = false
+                    }
+                )
+            }
+        },
+        onBackClick = onBackClick
+    )
+}
+
+
+// --- 2. UI 표시에만 집중하는 Stateless Composable ---
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CameraPreviewContent(
+    previewBitmap: Bitmap?,
+    isCapturing: Boolean,
+    errorMessage: String?,
+    onCaptureButtonClick: () -> Unit,
+    onBackClick: () -> Unit
+) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text(
+                        text = "카메라 프리뷰",
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBackClick) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_arrow_left),
+                            contentDescription = "뒤로가기",
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color(0xFFFDFDFD)
+                )
+            )
+        }
+    ) { paddingValues ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .background(Color(0xFFFDFDFD))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // 카메라 프리뷰 영역
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .background(
+                            color = Color(0xFF2C2C2C),
+                            shape = RoundedCornerShape(16.dp)
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (previewBitmap != null) {
+                        Image(
+                            bitmap = previewBitmap.asImageBitmap(),
+                            contentDescription = "카메라 프리뷰",
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(16.dp)),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else if (errorMessage != null) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "⚠️",
+                                fontSize = 48.sp
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = errorMessage,
+                                color = Color.White,
+                                fontSize = 16.sp
+                            )
+                        }
+                    } else {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            if (isCapturing) {
+                                CircularProgressIndicator(color = Color.White)
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text(
+                                    text = "사진 촬영 중...",
+                                    color = Color.White,
+                                    fontSize = 16.sp
+                                )
+                            } else {
+                                Text(
+                                    text = "📷",
+                                    fontSize = 48.sp
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text(
+                                    text = "사진을 촬영하세요",
+                                    color = Color.White,
+                                    fontSize = 16.sp
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // 사진 촬영 버튼
+                Button(
+                    onClick = onCaptureButtonClick,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF4CAF50),
+                        contentColor = Color.White
+                    ),
+                    enabled = !isCapturing
+                ) {
+                    Text(
+                        text = "사진 촬영",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+        }
+    }
+}
+
+// --- 3. 스냅샷 캡처 함수 ---
+
+suspend fun captureSnapshot(
+    url: String,
+    onSuccess: (Bitmap) -> Unit,
+    onError: (String) -> Unit
+) {
+    withContext(Dispatchers.IO) {
+        var connection: HttpURLConnection? = null
+        try {
+            connection = URL(url).openConnection() as HttpURLConnection
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 10000
+            connection.readTimeout = 10000
+            connection.doInput = true
+
+            val responseCode = connection.responseCode
+            if (responseCode != 200) {
+                withContext(Dispatchers.Main) {
+                    onError("연결 실패: HTTP $responseCode")
+                }
+                return@withContext
+            }
+
+            val inputStream = connection.inputStream
+            val bitmap = BitmapFactory.decodeStream(inputStream)
+
+            if (bitmap != null) {
+                withContext(Dispatchers.Main) {
+                    onSuccess(bitmap)
+                }
+            } else {
+                withContext(Dispatchers.Main) {
+                    onError("이미지 디코딩 실패")
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            withContext(Dispatchers.Main) {
+                onError("캡처 오류: ${e.message}")
+            }
+        } finally {
+            connection?.disconnect()
+        }
+    }
+}
+
+// --- 4. 상태별 Preview 함수들 ---
+
+@Preview(showBackground = true, showSystemUi = true, name = "Default State")
+@Composable
+fun CameraPreview_Default_Preview() {
+    CameraPreviewContent(
+        previewBitmap = null,
+        isCapturing = false,
+        errorMessage = null,
+        onCaptureButtonClick = {},
+        onBackClick = {}
+    )
+}
+
+@Preview(showBackground = true, showSystemUi = true, name = "Capturing Loading")
+@Composable
+fun CameraPreview_Loading_Preview() {
+    CameraPreviewContent(
+        previewBitmap = null,
+        isCapturing = true,
+        errorMessage = null,
+        onCaptureButtonClick = {},
+        onBackClick = {}
+    )
+}
+
+@Preview(showBackground = true, showSystemUi = true, name = "Error State")
+@Composable
+fun CameraPreview_Error_Preview() {
+    CameraPreviewContent(
+        previewBitmap = null,
+        isCapturing = false,
+        errorMessage = "연결에 실패했습니다.",
+        onCaptureButtonClick = {},
+        onBackClick = {}
+    )
+}
+
+@Preview(showBackground = true, showSystemUi = true, name = "Image Preview")
+@Composable
+fun CameraPreview_Image_Preview() {
+    val dummyBitmap = Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_8888).apply {
+        eraseColor(android.graphics.Color.MAGENTA)
+    }
+    CameraPreviewContent(
+        previewBitmap = dummyBitmap,
+        isCapturing = false,
+        errorMessage = null,
+        onCaptureButtonClick = {},
         onBackClick = {}
     )
 }
