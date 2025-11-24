@@ -6,6 +6,7 @@ add_subdirectory(llama.cpp)
 add_library(
     airis SHARED
     native-lib.cpp
+    prompt_generate.cpp
 )
 
 # Include 경로 설정 (llama.h를 찾기 위해)

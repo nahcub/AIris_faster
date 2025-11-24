@@ -6,6 +6,7 @@
 #include <android/log.h>
 #include <chrono>
 #include "llama.h"
+#include "prompt_generate.h"
 
 #define LOG_TAG "LlamaNative"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -19,6 +20,10 @@ static llama_context* ctx = nullptr;
 // Session management
 static llama_sampler* session_sampler = nullptr;
 static bool session_initialized = false;
+
+// Prompt caching
+static int n_past_system = 0;
+static bool system_prompt_cached = false;
 
 // Load pre-trained Transformer model from file
 extern "C"
@@ -58,12 +63,12 @@ Java_com_example_airis_NativeBridge_initSession(JNIEnv* env, jobject /* this */)
     LOGI("Initializing generation session...");
 
     // Configure threads: reserve 2 cores for system
-    int n_threads = std::max(1, std::min(8, (int) sysconf(_SC_NPROCESSORS_ONLN) - 2));
-    LOGI("Using %d threads", n_threads);
+    
 
     llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_threads = n_threads;
-    ctx_params.n_threads_batch = n_threads;
+    ctx_params.n_threads = 8;
+    ctx_params.n_threads_batch = 8;
+    params.n_gpu_layers = 30;
     ctx_params.n_ctx = 2048;
     ctx_params.n_batch = 2048;
 
@@ -89,15 +94,101 @@ Java_com_example_airis_NativeBridge_initSession(JNIEnv* env, jobject /* this */)
     }
 
     // Add sampler filters: greedy + min_p + temperature + distribution
-    llama_sampler_chain_add(session_sampler, llama_sampler_init_greedy());
-    llama_sampler_chain_add(session_sampler, llama_sampler_init_min_p(0.05f, 1));
-    llama_sampler_chain_add(session_sampler, llama_sampler_init_temp(0.8f));
+    llama_sampler_chain_add(session_sampler, llama_sampler_init_top_k(20));
+    llama_sampler_chain_add(session_sampler, llama_sampler_init_top_p(0.8f, 1));
+    llama_sampler_chain_add(session_sampler, llama_sampler_init_min_p(0.0f, 1));
+    llama_sampler_chain_add(session_sampler, llama_sampler_init_temp(0.7f));
     llama_sampler_chain_add(session_sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
-
     LOGI("Sampler initialized");
+
+    // Reset prompt caching state
+    n_past_system = 0;
+    system_prompt_cached = false;
 
     session_initialized = true;
     LOGI("Session initialized successfully!");
+    return JNI_TRUE;
+}
+
+// Decode system prompt and cache it in KV Cache
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_example_airis_NativeBridge_decodeSystemPrompt(JNIEnv* env, jobject /* this */) {
+    if (!model) {
+        LOGE("Model not loaded");
+        return JNI_FALSE;
+    }
+
+    if (!session_initialized || !ctx) {
+        LOGE("Session not initialized. Call initSession() first!");
+        return JNI_FALSE;
+    }
+
+    if (system_prompt_cached) {
+        LOGI("System prompt already cached");
+        return JNI_TRUE;
+    }
+
+    LOGI("Decoding system prompt for caching...");
+    
+    // 시간 측정 시작
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+    const llama_vocab* vocab = llama_model_get_vocab(model);
+    if (!vocab) {
+        LOGE("Failed to get vocab from model");
+        return JNI_FALSE;
+    }
+
+    // Build system prompt
+    std::string system_prompt = buildSystemPrompt();
+    LOGI("System prompt: %s", system_prompt.c_str());
+
+    // Tokenize system prompt
+    std::vector<llama_token> tokens;
+    const char* prompt = system_prompt.c_str();
+
+    // First call to get required token count
+    int n_tokens = -llama_tokenize(vocab, prompt, strlen(prompt), nullptr, 0, true, true);
+    if (n_tokens <= 0) {
+        LOGE("Failed to tokenize system prompt or empty tokens: %d", n_tokens);
+        return JNI_FALSE;
+    }
+
+    // Second call with allocated buffer
+    tokens.resize(n_tokens);
+    n_tokens = llama_tokenize(vocab, prompt, strlen(prompt), tokens.data(), tokens.size(), true, true);
+
+    if (n_tokens <= 0) {
+        LOGE("Failed to tokenize system prompt: %d", n_tokens);
+        return JNI_FALSE;
+    }
+
+    LOGI("Tokenized system prompt: %d tokens", n_tokens);
+
+    // Prepare batch and decode system prompt
+    llama_batch batch = llama_batch_get_one(tokens.data(), n_tokens);
+    LOGI("Decoding system prompt batch with %d tokens...", batch.n_tokens);
+
+    int decode_result = llama_decode(ctx, batch);
+    if (decode_result != 0) {
+        LOGE("Failed to decode system prompt, result: %d", decode_result);
+        return JNI_FALSE;
+    }
+
+    // Store the number of tokens for n_past in future generations
+    n_past_system = n_tokens;
+    system_prompt_cached = true;
+
+    // 시간 측정 종료 및 로그 출력
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    double seconds = duration.count() / 1000.0;
+
+    LOGI("System prompt cached successfully: %d tokens", n_past_system);
+    LOGI("System prompt decode stats - Time: %.2f sec, Tokens: %d, Speed: %.2f tok/sec", 
+         seconds, n_tokens, n_tokens / seconds);
+
     return JNI_TRUE;
 }
 
@@ -118,6 +209,8 @@ Java_com_example_airis_NativeBridge_closeSession(JNIEnv* env, jobject /* this */
     }
 
     session_initialized = false;
+    n_past_system = 0;
+    system_prompt_cached = false;
     LOGI("Session closed");
 }
 
@@ -138,22 +231,34 @@ Java_com_example_airis_NativeBridge_generateStreaming(JNIEnv* env, jobject /* th
 
     const char* user_prompt = env->GetStringUTFChars(prompt_, nullptr);
 
-    // Add system prompt for docent role
-    std::string system_prompt = "You are a docent, explaining art. Answer briefly.\n\n";
-    std::string full_prompt = system_prompt + std::string(user_prompt);
+    // Check if system prompt is cached
+    if (!system_prompt_cached) {
+        LOGE("System prompt not cached. Call decodeSystemPrompt() first!");
+        env->ReleaseStringUTFChars(prompt_, user_prompt);
+        return JNI_FALSE;
+    }
 
-    LOGI("Generating with streaming (session-based), prompt: %s", full_prompt.c_str());
+    // Generate user prompt only (system prompt is already cached)
+    std::string user_prompt_str = buildUserPrompt(std::string(user_prompt));
+
+    LOGI("Generating with streaming (session-based, cached system prompt), user prompt: %s", user_prompt_str.c_str());
 
     auto start_time = std::chrono::high_resolution_clock::now();
 
     const llama_vocab* vocab = llama_model_get_vocab(model);
-
-    // Tokenize prompt
+    
+    if (!vocab) {
+        LOGE("Failed to get vocab from model");
+        env->ReleaseStringUTFChars(prompt_, user_prompt);
+        return JNI_FALSE;
+    }
+    
+    // Tokenize user prompt only
     std::vector<llama_token> tokens;
-    const char* prompt = full_prompt.c_str();
+    const char* prompt = user_prompt_str.c_str();
 
     // First call to get required token count
-    int n_tokens = llama_tokenize(vocab, prompt, strlen(prompt), nullptr, 0, false, false);
+    int n_tokens = -llama_tokenize(vocab, prompt, strlen(prompt), nullptr, 0, true, true);
     if (n_tokens <= 0) {
         LOGE("Failed to tokenize prompt or empty tokens: %d", n_tokens);
         env->ReleaseStringUTFChars(prompt_, user_prompt);
@@ -162,7 +267,7 @@ Java_com_example_airis_NativeBridge_generateStreaming(JNIEnv* env, jobject /* th
 
     // Second call with allocated buffer
     tokens.resize(n_tokens);
-    n_tokens = llama_tokenize(vocab, prompt, strlen(prompt), tokens.data(), tokens.size(), false, false);
+    n_tokens = llama_tokenize(vocab, prompt, strlen(prompt), tokens.data(), tokens.size(), true, true);
 
     if (n_tokens <= 0) {
         LOGE("Failed to tokenize prompt: %d", n_tokens);
@@ -170,11 +275,12 @@ Java_com_example_airis_NativeBridge_generateStreaming(JNIEnv* env, jobject /* th
         return JNI_FALSE;
     }
 
-    LOGI("Tokenized prompt: %d tokens", n_tokens);
+    LOGI("Tokenized user prompt: %d tokens (system prompt cached: %d tokens)", n_tokens, n_past_system);
 
-    // Prepare batch and encode prompt
+    // Prepare batch and encode user prompt
+    // llama_batch_get_one will automatically set pos starting from n_past_system
     llama_batch batch = llama_batch_get_one(tokens.data(), n_tokens);
-    LOGI("Decoding prompt batch with %d tokens...", batch.n_tokens);
+    LOGI("Decoding user prompt batch with %d tokens (starting from pos %d)...", batch.n_tokens, n_past_system);
 
     int decode_result = llama_decode(ctx, batch);
     if (decode_result != 0) {
@@ -199,9 +305,22 @@ Java_com_example_airis_NativeBridge_generateStreaming(JNIEnv* env, jobject /* th
         return JNI_FALSE;
     }
 
+    // Stop sequences 정의
+    const std::vector<std::string> stop_sequences = {
+        "\n\n[QUESTION]",
+        "\n\nQ:",
+        "\nQ:",
+        "[QUESTION]",
+        "\n\n[ARTWORK INFO]"
+    };
+
     // Generate tokens and stream via callback
     int n_cur = 0;
-    const int n_max_gen = 50;
+    const int n_max_gen = 1024;
+    const size_t LOOKBACK_SIZE = 200; // 최근 200자만 확인
+    
+    // 생성된 텍스트를 누적하여 추적
+    std::string accumulated_text = "";
 
     LOGI("Starting streaming generation loop, max tokens: %d", n_max_gen);
 
@@ -228,6 +347,31 @@ Java_com_example_airis_NativeBridge_generateStreaming(JNIEnv* env, jobject /* th
         }
 
         std::string piece_str(piece, n);
+        accumulated_text += piece_str;
+
+        // 버퍼 크기 제한 (메모리 절약)
+        if (accumulated_text.length() > LOOKBACK_SIZE) {
+            accumulated_text = accumulated_text.substr(accumulated_text.length() - LOOKBACK_SIZE);
+        }
+
+        // Stop sequence 감지
+        bool should_stop = false;
+        for (const auto& stop_seq : stop_sequences) {
+            if (accumulated_text.find(stop_seq) != std::string::npos) {
+                LOGI("Stop sequence detected: %s", stop_seq.c_str());
+                should_stop = true;
+                break;
+            }
+        }
+        
+        // 연속된 줄바꿈 2개 이상 감지 (답변 완료 신호)
+        if (accumulated_text.length() >= 2) {
+            std::string last_chars = accumulated_text.substr(accumulated_text.length() - 2);
+            if (last_chars == "\n\n") {
+                LOGI("Double newline detected, stopping generation");
+                should_stop = true;
+            }
+        }
 
         // Stream token via callback to Kotlin/UI
         jstring jpiece = env->NewStringUTF(piece_str.c_str());
@@ -239,6 +383,12 @@ Java_com_example_airis_NativeBridge_generateStreaming(JNIEnv* env, jobject /* th
             LOGE("Exception occurred during callback");
             env->ExceptionDescribe();
             env->ExceptionClear();
+            break;
+        }
+
+        // Stop sequence 감지 시 중단
+        if (should_stop) {
+            LOGI("Stopping generation due to stop sequence");
             break;
         }
 

@@ -18,6 +18,9 @@ object NativeBridge {
     external fun initSession(): Boolean
     external fun closeSession()
 
+    // Prompt caching
+    external fun decodeSystemPrompt(): Boolean
+
     // Streaming generation with real-time callback
     external fun generateStreaming(prompt: String, onToken: (String) -> Unit): Boolean
 

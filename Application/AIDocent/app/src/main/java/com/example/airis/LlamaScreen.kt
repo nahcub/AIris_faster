@@ -25,6 +25,7 @@ fun LlamaScreen(onBackClick: () -> Unit = {}) {
     val coroutineScope = rememberCoroutineScope()
     var modelLoaded by remember { mutableStateOf(false) }
     var sessionInitialized by remember { mutableStateOf(false) }
+    var systemPromptDecoded by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("Ready to load model.") }
     var userInput by remember { mutableStateOf("") }
     var generatedText by remember { mutableStateOf("") }
@@ -99,7 +100,7 @@ fun LlamaScreen(onBackClick: () -> Unit = {}) {
                     coroutineScope.launch {
                         try {
                             val appFilesDir = context.getExternalFilesDir(null)
-                            val modelFile = File(appFilesDir, "Llama-3.2-3B-Instruct-Q4_K_M.gguf")
+                            val modelFile = File(appFilesDir, "Qwen3-0.6B-IQ4_NL.gguf")
                             val path = modelFile.absolutePath
                             
                             if (!modelFile.exists()) {
@@ -124,7 +125,7 @@ fun LlamaScreen(onBackClick: () -> Unit = {}) {
 
                                 if (sessionInit) {
                                     sessionInitialized = true
-                                    statusText = "✅ Session initialized!\n\n⚡ Ready for fast generation!"
+                                    statusText = "✅ Session initialized!\n\nClick 'Decode System Prompt' to cache artwork info for faster generation."
                                 } else {
                                     statusText = "❌ Failed to initialize session.\nCheck logcat for details."
                                 }
@@ -141,90 +142,127 @@ fun LlamaScreen(onBackClick: () -> Unit = {}) {
                 Text("Load Model from App Storage")
             }
         } else {
-            // 모델이 로드된 후 - 입력 필드와 생성 버튼
-            OutlinedTextField(
-                value = userInput,
-                onValueChange = { userInput = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Enter your prompt") },
-                placeholder = { Text("Type your question here...") },
-                enabled = !isGenerating,
-                singleLine = false,
-                maxLines = 4
-            )
-            
-            Spacer(modifier = Modifier.height(12.dp))
-            
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            // 모델이 로드된 후
+            if (sessionInitialized && !systemPromptDecoded) {
+                // 시스템 프롬프트 디코딩 버튼
                 Button(
                     onClick = {
-                        if (userInput.isBlank()) return@Button
-
-                        if (!sessionInitialized) {
-                            statusText = "❌ Session not initialized!"
-                            return@Button
-                        }
-
-                        isGenerating = true
-                        generatedText = "Prompt: ${userInput.trim()}\n\nResponse: "
-                        statusText = "⚡ Generating response (fast mode)..."
-                        generationStats = null
-
-                        // 코루틴을 사용하여 백그라운드 스레드에서 스트리밍 생성
                         coroutineScope.launch {
                             try {
-                                Log.d("LlamaScreen", "Starting streaming generation (session-based)...")
-                                val startTime = System.currentTimeMillis()
-                                var tokenCount = 0
-
-                                val success = withTimeoutOrNull(300000) { // 5분 타임아웃
-                                    withContext(Dispatchers.Default) {
-                                        Log.d("LlamaScreen", "Calling NativeBridge.generateStreaming with session...")
-                                        NativeBridge.generateStreaming(userInput.trim()) { token ->
-                                            // 토큰이 생성될 때마다 UI 업데이트
-                                            Log.d("LlamaScreen", "Received token: $token")
-                                            generatedText += token
-                                            tokenCount++
-                                        }
-                                    }
+                                statusText = "Decoding system prompt (artwork info)..."
+                                val decoded = withContext(Dispatchers.Default) {
+                                    NativeBridge.decodeSystemPrompt()
                                 }
-
-                                val endTime = System.currentTimeMillis()
-                                val elapsedSeconds = (endTime - startTime) / 1000.0
-                                val tokensPerSecond = if (elapsedSeconds > 0) tokenCount / elapsedSeconds else 0.0
-
-                                Log.d("LlamaScreen", "Streaming completed: ${success != null}")
-
-                                if (success == true) {
-                                    Log.d("LlamaScreen", "Streaming generation successful")
-                                    statusText = "✅ Response generated!"
-                                    generationStats = String.format(
-                                        "⏱️ Total time: %.2fs | Tokens: %d | Speed: %.2f tokens/sec",
-                                        elapsedSeconds,
-                                        tokenCount,
-                                        tokensPerSecond
-                                    )
-                                } else if (success == false) {
-                                    Log.w("LlamaScreen", "Streaming generation failed")
-                                    statusText = "❌ Generation failed. Check logcat for details (filter: LlamaNative)"
+                                
+                                if (decoded) {
+                                    systemPromptDecoded = true
+                                    statusText = "✅ System prompt cached!\n\n⚡ Ready for fast generation!\n\nYou can now ask questions."
                                 } else {
-                                    Log.w("LlamaScreen", "Generation timed out")
-                                    statusText = "⏱️ Generation timed out after 5 minutes.\n\nCheck logcat for details (filter: LlamaNative)"
+                                    statusText = "❌ Failed to decode system prompt.\nCheck logcat for details."
                                 }
                             } catch (e: Exception) {
-                                Log.e("LlamaScreen", "Error during generation", e)
-                                statusText = "❌ Error: ${e.message}\n\nCheck logcat for details (filter: LlamaNative or LlamaScreen)"
-                            } finally {
-                                Log.d("LlamaScreen", "Finally block: setting isGenerating = false")
-                                isGenerating = false
+                                statusText = "Error: ${e.message}"
                             }
                         }
                     },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Decode System Prompt (Cache Artwork Info)")
+                }
+                
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+            
+            // 시스템 프롬프트가 디코딩된 후에만 입력 필드와 생성 버튼 표시
+            if (systemPromptDecoded) {
+                OutlinedTextField(
+                    value = userInput,
+                    onValueChange = { userInput = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Enter your prompt") },
+                    placeholder = { Text("Type your question here...") },
+                    enabled = !isGenerating,
+                    singleLine = false,
+                    maxLines = 4
+                )
+                
+                Spacer(modifier = Modifier.height(12.dp))
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            if (userInput.isBlank()) return@Button
+
+                            if (!sessionInitialized) {
+                                statusText = "❌ Session not initialized!"
+                                return@Button
+                            }
+                            
+                            if (!systemPromptDecoded) {
+                                statusText = "❌ System prompt not decoded! Click 'Decode System Prompt' first."
+                                return@Button
+                            }
+
+                            isGenerating = true
+                            generatedText = ""
+                            statusText = "⚡ Generating response (fast mode)..."
+                            generationStats = null
+
+                            // 코루틴을 사용하여 백그라운드 스레드에서 스트리밍 생성
+                            coroutineScope.launch {
+                                try {
+                                    Log.d("LlamaScreen", "Starting streaming generation (session-based)...")
+                                    val startTime = System.currentTimeMillis()
+                                    var tokenCount = 0
+
+                                    val success = withTimeoutOrNull(300000) { // 5분 타임아웃
+                                        withContext(Dispatchers.Default) {
+                                            Log.d("LlamaScreen", "Calling NativeBridge.generateStreaming with session...")
+                                            NativeBridge.generateStreaming(userInput.trim()) { token ->
+                                                // 토큰이 생성될 때마다 UI 업데이트
+                                                Log.d("LlamaScreen", "Received token: $token")
+                                                generatedText += token
+                                                tokenCount++
+                                            }
+                                        }
+                                    }
+
+                                    val endTime = System.currentTimeMillis()
+                                    val elapsedSeconds = (endTime - startTime) / 1000.0
+                                    val tokensPerSecond = if (elapsedSeconds > 0) tokenCount / elapsedSeconds else 0.0
+
+                                    Log.d("LlamaScreen", "Streaming completed: ${success != null}")
+
+                                    if (success == true) {
+                                        Log.d("LlamaScreen", "Streaming generation successful")
+                                        statusText = "✅ Response generated!"
+                                        generationStats = String.format(
+                                            "⏱️ Total time: %.2fs | Tokens: %d | Speed: %.2f tokens/sec",
+                                            elapsedSeconds,
+                                            tokenCount,
+                                            tokensPerSecond
+                                        )
+                                    } else if (success == false) {
+                                        Log.w("LlamaScreen", "Streaming generation failed")
+                                        statusText = "❌ Generation failed. Check logcat for details (filter: LlamaNative)"
+                                    } else {
+                                        Log.w("LlamaScreen", "Generation timed out")
+                                        statusText = "⏱️ Generation timed out after 5 minutes.\n\nCheck logcat for details (filter: LlamaNative)"
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e("LlamaScreen", "Error during generation", e)
+                                    statusText = "❌ Error: ${e.message}\n\nCheck logcat for details (filter: LlamaNative or LlamaScreen)"
+                                } finally {
+                                    Log.d("LlamaScreen", "Finally block: setting isGenerating = false")
+                                    isGenerating = false
+                                }
+                            }
+                        },
                     modifier = Modifier.weight(1f),
-                    enabled = !isGenerating && userInput.isNotBlank() && sessionInitialized
+                    enabled = !isGenerating && userInput.isNotBlank() && sessionInitialized && systemPromptDecoded
                 ) {
                     Text(if (isGenerating) "⚡ Generating..." else "⚡ Generate (Fast)")
                 }
@@ -234,14 +272,15 @@ fun LlamaScreen(onBackClick: () -> Unit = {}) {
                         userInput = ""
                         generatedText = ""
                         generationStats = null
-                        statusText = "✅ Session ready. ⚡ Fast mode enabled!"
+                        statusText = "✅ System prompt cached. ⚡ Fast mode enabled!"
                     },
                     enabled = !isGenerating
                 ) {
                     Icon(Icons.Default.Clear, contentDescription = "Clear")
                 }
-            }
-        }
+            } // Row 블록 닫기
+        } // if (systemPromptDecoded) 블록 닫기
+        } // else 블록 닫기
         
         Spacer(modifier = Modifier.height(16.dp))
         
