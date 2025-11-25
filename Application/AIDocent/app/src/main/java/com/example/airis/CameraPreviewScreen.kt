@@ -28,10 +28,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * 카메라 프리뷰 화면
- * - 사진 촬영
- * - TFLite 모델로 임베딩 추출
- * - 작품 검색 및 결과 표시
+ * 카메라 프리뷰 화면 (YOLO + EfficientNet 적용)
  */
 @Composable
 fun CameraPreviewScreen(
@@ -42,8 +39,10 @@ fun CameraPreviewScreen(
 
     // UI 상태
     var previewBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var croppedBitmap by remember { mutableStateOf<Bitmap?>(null) } // 크롭된 이미지 확인용
     var isCapturing by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var statusMessage by remember { mutableStateOf("작품을 촬영하세요") }
 
     // AI 인식 상태
     var isProcessing by remember { mutableStateOf(false) }
@@ -52,6 +51,7 @@ fun CameraPreviewScreen(
 
     // 모델 및 데이터 초기화
     val tfliteModel = remember { TFLiteModel(context) }
+    val yoloDetector = remember { YoloDetector(context) } // YOLO 추가
     val artworkLoader = remember { ArtworkLoader(context) }
     val artworks = remember { artworkLoader.loadArtworks() }
 
@@ -59,20 +59,25 @@ fun CameraPreviewScreen(
     DisposableEffect(Unit) {
         onDispose {
             tfliteModel.close()
+            yoloDetector.close() // YOLO 해제
         }
     }
 
     // UI 렌더링
     CameraPreviewContent(
         previewBitmap = previewBitmap,
+        croppedBitmap = croppedBitmap, // UI에 크롭된 이미지 표시 옵션
         isCapturing = isCapturing,
         isProcessing = isProcessing,
         errorMessage = errorMessage,
+        statusMessage = statusMessage,
         recognitionResult = recognitionResult,
         showResultDialog = showResultDialog,
         onCaptureButtonClick = {
             isCapturing = true
             errorMessage = null
+            statusMessage = "사진 촬영 중..."
+            croppedBitmap = null
 
             coroutineScope.launch {
                 captureSnapshot(
@@ -80,25 +85,32 @@ fun CameraPreviewScreen(
                     onSuccess = { bitmap ->
                         previewBitmap = bitmap
                         isCapturing = false
-
-                        // 캡처 성공 후 AI 인식 시작
                         isProcessing = true
+                        statusMessage = "🤖 객체 탐지 중..."
 
+                        // 백그라운드 AI 처리
                         coroutineScope.launch(Dispatchers.Default) {
                             try {
-                                println("🤖 AI 인식 시작...")
+                                // 1. YOLOv8 객체 탐지 및 크롭
+                                val (cropResult, isCropped) = yoloDetector.detectAndCrop(bitmap)
 
-                                // 1. 임베딩 추출
-                                val embedding = tfliteModel.extractEmbedding(bitmap)
+                                withContext(Dispatchers.Main) {
+                                    croppedBitmap = cropResult // UI 업데이트 (선택 사항)
+                                    statusMessage = if(isCropped) "✂️ 작품 영역 추출 완료" else "⚠️ 전체 이미지 사용"
+                                }
+
+                                // 2. EfficientNet 임베딩 추출 (크롭된 이미지 사용)
+                                val embedding = tfliteModel.extractEmbedding(cropResult)
 
                                 if (embedding != null) {
-                                    // 2. 가장 유사한 작품 찾기
+                                    withContext(Dispatchers.Main) { statusMessage = "🔍 데이터베이스 검색 중..." }
+
+                                    // 3. 매칭
                                     val result = SimilarityCalculator.findMostSimilar(
                                         queryEmbedding = embedding,
                                         artworks = artworks
                                     )
 
-                                    // 3. 결과 저장 및 팝업 표시
                                     withContext(Dispatchers.Main) {
                                         if (result != null) {
                                             recognitionResult = RecognitionResult(
@@ -106,26 +118,23 @@ fun CameraPreviewScreen(
                                                 similarity = result.similarity
                                             )
                                             showResultDialog = true
-                                            println("✅ AI 인식 완료: ${result.artwork.id} (${result.similarity})")
                                         } else {
                                             errorMessage = "작품을 찾을 수 없습니다."
-                                            println("❌ 작품 검색 실패")
                                         }
                                         isProcessing = false
+                                        statusMessage = "완료"
                                     }
                                 } else {
                                     withContext(Dispatchers.Main) {
                                         errorMessage = "임베딩 추출 실패"
                                         isProcessing = false
-                                        println("❌ 임베딩 추출 실패")
                                     }
                                 }
                             } catch (e: Exception) {
                                 e.printStackTrace()
                                 withContext(Dispatchers.Main) {
-                                    errorMessage = "인식 오류: ${e.message}"
+                                    errorMessage = "오류: ${e.message}"
                                     isProcessing = false
-                                    println("❌ AI 인식 오류: ${e.message}")
                                 }
                             }
                         }
@@ -133,7 +142,6 @@ fun CameraPreviewScreen(
                     onError = { error ->
                         errorMessage = error
                         isCapturing = false
-                        println("❌ 촬영 실패: $error")
                     }
                 )
             }
@@ -141,6 +149,7 @@ fun CameraPreviewScreen(
         onDialogDismiss = {
             showResultDialog = false
             recognitionResult = null
+            statusMessage = "작품을 촬영하세요"
         },
         onBackClick = onBackClick
     )
@@ -155,15 +164,17 @@ data class RecognitionResult(
 )
 
 /**
- * 카메라 프리뷰 UI
+ * 카메라 프리뷰 UI (수정됨)
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CameraPreviewContent(
     previewBitmap: Bitmap?,
+    croppedBitmap: Bitmap?,
     isCapturing: Boolean,
     isProcessing: Boolean,
     errorMessage: String?,
+    statusMessage: String,
     recognitionResult: RecognitionResult?,
     showResultDialog: Boolean,
     onCaptureButtonClick: () -> Unit,
@@ -173,24 +184,13 @@ fun CameraPreviewContent(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = {
-                    Text(
-                        text = "작품 인식",
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                },
+                title = { Text("카메라 프리뷰", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onBackClick) {
-                        Icon(
-                            painter = painterResource(R.drawable.ic_arrow_left),
-                            contentDescription = "뒤로가기"
-                        )
+                        Icon(painterResource(R.drawable.ic_arrow_left), "뒤로가기")
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color(0xFFFDFDFD)
-                )
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFFFDFDFD))
             )
         }
     ) { paddingValues ->
@@ -201,167 +201,102 @@ fun CameraPreviewContent(
                 .background(Color(0xFFFDFDFD))
         ) {
             Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(20.dp),
+                modifier = Modifier.fillMaxSize().padding(20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // 카메라 프리뷰 영역
+                // 메인 프리뷰 영역
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
-                        .background(
-                            color = Color(0xFF2C2C2C),
-                            shape = RoundedCornerShape(16.dp)
-                        ),
+                        .background(Color(0xFF2C2C2C), RoundedCornerShape(16.dp))
+                        .clip(RoundedCornerShape(16.dp)),
                     contentAlignment = Alignment.Center
                 ) {
-                    when {
-                        previewBitmap != null -> {
-                            // 촬영된 이미지 표시
-                            Image(
-                                bitmap = previewBitmap.asImageBitmap(),
-                                contentDescription = "카메라 프리뷰",
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .clip(RoundedCornerShape(16.dp)),
-                                contentScale = ContentScale.Crop
-                            )
+                    if (previewBitmap != null) {
+                        Image(
+                            bitmap = previewBitmap.asImageBitmap(),
+                            contentDescription = "Preview",
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else {
+                        // 기본 상태
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            //Text("📷", fontSize = 48.sp)
+                            //Text("촬영 대기 중", color = Color.Gray)
+                        }
+                    }
 
-                            // AI 처리 중 오버레이
-                            if (isProcessing) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .background(Color.Black.copy(alpha = 0.6f))
-                                        .clip(RoundedCornerShape(16.dp)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Column(
-                                        horizontalAlignment = Alignment.CenterHorizontally
-                                    ) {
-                                        CircularProgressIndicator(
-                                            color = Color.White,
-                                            strokeWidth = 4.dp,
-                                            modifier = Modifier.size(60.dp)
-                                        )
-                                        Spacer(modifier = Modifier.height(16.dp))
-                                        Text(
-                                            text = "🤖 AI 작품 인식 중...",
-                                            color = Color.White,
-                                            fontSize = 18.sp,
-                                            fontWeight = FontWeight.Medium
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        errorMessage != null -> {
-                            // 에러 메시지
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Text(
-                                    text = "⚠️",
-                                    fontSize = 48.sp
-                                )
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Text(
-                                    text = errorMessage,
-                                    color = Color.White,
-                                    fontSize = 16.sp,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        }
-                        isCapturing -> {
-                            // 촬영 중
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
+                    // 처리 중 오버레이 & 상태 메시지
+                    if (isProcessing || isCapturing) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.6f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 CircularProgressIndicator(color = Color.White)
                                 Spacer(modifier = Modifier.height(16.dp))
                                 Text(
-                                    text = "📸 사진 촬영 중...",
-                                    color = Color.White,
-                                    fontSize = 16.sp
-                                )
-                            }
-                        }
-                        else -> {
-                            // 초기 상태
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Text(
-                                    text = "🎨",
-                                    fontSize = 64.sp
-                                )
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Text(
-                                    text = "작품을 촬영하세요",
+                                    text = statusMessage,
                                     color = Color.White,
                                     fontSize = 18.sp,
-                                    fontWeight = FontWeight.Medium
+                                    fontWeight = FontWeight.Bold
                                 )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = "AI가 작품을 자동으로 인식합니다",
-                                    color = Color.Gray,
-                                    fontSize = 14.sp
-                                )
+
+                                // 크롭된 이미지가 있으면 작게 보여줌 (디버깅용)
+                                if (croppedBitmap != null) {
+                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Text("Detection Result:", color = Color.Yellow, fontSize = 12.sp)
+                                    Image(
+                                        bitmap = croppedBitmap.asImageBitmap(),
+                                        contentDescription = "Crop",
+                                        modifier = Modifier
+                                            .size(100.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color.DarkGray)
+                                    )
+                                }
                             }
+                        }
+                    }
+
+                    // 에러 표시
+                    if (errorMessage != null) {
+                        Box(
+                            modifier = Modifier.fillMaxSize().background(Color.Black.copy(0.7f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(errorMessage, color = Color.Red, textAlign = TextAlign.Center)
                         }
                     }
                 }
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                // 사진 촬영 버튼
+                // 버튼
                 Button(
                     onClick = onCaptureButtonClick,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
+                    modifier = Modifier.fillMaxWidth().height(56.dp),
                     shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF4CAF50),
-                        contentColor = Color.White,
-                        disabledContainerColor = Color.Gray,
-                        disabledContentColor = Color.White
-                    ),
-                    enabled = !isCapturing && !isProcessing
+                    enabled = !isCapturing && !isProcessing,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))
                 ) {
-                    Text(
-                        text = when {
-                            isCapturing -> "촬영 중..."
-                            isProcessing -> "인식 중..."
-                            else -> "📷 사진 촬영"
-                        },
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Text("눌러서 촬영하기", fontSize = 18.sp, fontWeight = FontWeight.Medium)
                 }
             }
 
-            // 인식 결과 팝업
+            // 결과 다이얼로그
             if (showResultDialog && recognitionResult != null) {
-                RecognitionResultDialog(
-                    result = recognitionResult,
-                    onDismiss = onDialogDismiss
-                )
+                RecognitionResultDialog(recognitionResult, onDialogDismiss)
             }
         }
     }
 }
 
-/**
- * 인식 결과 팝업 Dialog
- */
+// ... (RecognitionResultDialog 및 captureSnapshot 함수는 기존과 동일하므로 생략하거나 기존 코드 사용)
 @Composable
 fun RecognitionResultDialog(
     result: RecognitionResult,
@@ -369,187 +304,55 @@ fun RecognitionResultDialog(
 ) {
     Dialog(onDismissRequest = onDismiss) {
         Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
             shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = Color.White
-            ),
-            elevation = CardDefaults.cardElevation(8.dp)
+            colors = CardDefaults.cardColors(containerColor = Color.White)
         ) {
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(32.dp),
+                modifier = Modifier.padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // 아이콘
-                Text(
-                    text = when {
-                        result.similarity > 0.7f -> "✅"
-                        result.similarity > 0.5f -> "🎯"
-                        else -> "🤔"
-                    },
-                    fontSize = 64.sp
-                )
-
-                Spacer(modifier = Modifier.height(20.dp))
-
-                // 제목
-                Text(
-                    text = when {
-                        result.similarity > 0.7f -> "작품을 찾았습니다!"
-                        result.similarity > 0.5f -> "유사한 작품을 찾았습니다"
-                        else -> "낮은 유사도"
-                    },
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color.Black
-                )
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                // 작품 ID
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = Color(0xFFF5F5F5)
-                    ),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = "작품 ID",
-                            fontSize = 14.sp,
-                            color = Color.Gray
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = result.artworkId,
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.Black
-                        )
-                    }
-                }
-
+                Text(if (result.similarity > 0.7f) "✅" else "✅", fontSize = 50.sp)
                 Spacer(modifier = Modifier.height(16.dp))
-
-                // 유사도
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = when {
-                            result.similarity > 0.7f -> Color(0xFFE8F5E9)
-                            result.similarity > 0.5f -> Color(0xFFFFF3E0)
-                            else -> Color(0xFFFFEBEE)
-                        }
-                    ),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = "유사도",
-                            fontSize = 14.sp,
-                            color = Color.Gray
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "${(result.similarity * 100).toInt()}%",
-                            fontSize = 32.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = when {
-                                result.similarity > 0.7f -> Color(0xFF4CAF50)
-                                result.similarity > 0.5f -> Color(0xFFFFA726)
-                                else -> Color(0xFFEF5350)
-                            }
-                        )
-                    }
-                }
-
+                Text("인식 결과", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("ID: ${result.artworkId}", fontSize = 18.sp)
+                Text(
+                    "유사도: ${(result.similarity * 100).toInt()}%",
+                    color = if(result.similarity > 0.7f) Color(0xFF4CAF50) else Color.Black,
+                    fontWeight = FontWeight.Bold
+                )
                 Spacer(modifier = Modifier.height(24.dp))
-
-                // 확인 버튼
-                Button(
-                    onClick = onDismiss,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(50.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFF4CAF50)
-                    )
-                ) {
-                    Text(
-                        text = "확인",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
+                    Text("확인")
                 }
             }
         }
     }
 }
 
-/**
- * 스냅샷 캡처 함수
- * ESP32-CAM에서 이미지 가져오기
- */
 suspend fun captureSnapshot(
     url: String,
     onSuccess: (Bitmap) -> Unit,
     onError: (String) -> Unit
 ) {
     withContext(Dispatchers.IO) {
-        var connection: HttpURLConnection? = null
         try {
-            println("📸 스냅샷 요청: $url")
-
-            connection = URL(url).openConnection() as HttpURLConnection
+            val connection = URL(url).openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
-            connection.connectTimeout = 10000
-            connection.readTimeout = 10000
-            connection.doInput = true
+            connection.connectTimeout = 5000
+            connection.readTimeout = 5000
 
-            val responseCode = connection.responseCode
-            if (responseCode != 200) {
-                withContext(Dispatchers.Main) {
-                    onError("연결 실패: HTTP $responseCode")
-                }
-                return@withContext
-            }
-
-            val inputStream = connection.inputStream
-            val bitmap = BitmapFactory.decodeStream(inputStream)
-
-            if (bitmap != null) {
-                println("✅ 스냅샷 캡처 성공: ${bitmap.width}x${bitmap.height}")
-                withContext(Dispatchers.Main) {
-                    onSuccess(bitmap)
-                }
+            if (connection.responseCode == 200) {
+                val bitmap = BitmapFactory.decodeStream(connection.inputStream)
+                if (bitmap != null) withContext(Dispatchers.Main) { onSuccess(bitmap) }
+                else withContext(Dispatchers.Main) { onError("이미지 디코딩 실패") }
             } else {
-                withContext(Dispatchers.Main) {
-                    onError("이미지 디코딩 실패")
-                }
+                withContext(Dispatchers.Main) { onError("연결 실패: ${connection.responseCode}") }
             }
+            connection.disconnect()
         } catch (e: Exception) {
-            e.printStackTrace()
-            withContext(Dispatchers.Main) {
-                onError("캡처 오류: ${e.message}")
-            }
-        } finally {
-            connection?.disconnect()
+            withContext(Dispatchers.Main) { onError("네트워크 오류: ${e.message}") }
         }
     }
 }
