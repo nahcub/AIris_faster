@@ -1,3 +1,4 @@
+/*
 package com.example.airis
 
 import kotlin.math.sqrt
@@ -176,5 +177,56 @@ object SimilarityCalculator {
         }
 
         return sortedResults
+    }
+}
+ */
+
+package com.example.airis
+
+import kotlin.math.sqrt
+
+data class SimilarityResult(
+    val artwork: Artwork,
+    val similarity: Float
+)
+
+object SimilarityCalculator {
+
+    fun cosineSimilarity(vector1: FloatArray, vector2: FloatArray): Float {
+        var dotProduct = 0.0f
+        var norm1 = 0.0f
+        var norm2 = 0.0f
+
+        for (i in vector1.indices) {
+            dotProduct += vector1[i] * vector2[i]
+            norm1 += vector1[i] * vector1[i]
+            norm2 += vector2[i] * vector2[i]
+        }
+
+        val length = (sqrt(norm1) * sqrt(norm2))
+        return if (length == 0.0f) 0.0f else dotProduct / length
+    }
+
+    fun findMostSimilar(queryEmbedding: FloatArray, artworks: List<Artwork>): SimilarityResult? {
+        if (artworks.isEmpty()) return null
+
+        var bestMatch: Artwork? = null
+        var bestSimilarity = -1.0f
+
+        for (artwork in artworks) {
+            // [수정] artwork.embedding -> artwork.vector
+            val similarity = cosineSimilarity(queryEmbedding, artwork.vector)
+            if (similarity > bestSimilarity) {
+                bestSimilarity = similarity
+                bestMatch = artwork
+            }
+        }
+
+        // [추가] 너무 낮은 유사도는 오답 처리 (0.6 이상만 인정)
+        return if (bestMatch != null && bestSimilarity > 0.4f) {
+            SimilarityResult(bestMatch, bestSimilarity)
+        } else {
+            null
+        }
     }
 }

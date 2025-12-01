@@ -1,3 +1,4 @@
+/*
 package com.example.airis
 
 import android.content.Context
@@ -127,5 +128,82 @@ class ArtworkLoader(private val context: Context) {
     fun clearCache() {
         artworks = null
         println("🗑️ 작품 캐시 초기화")
+    }
+}
+ */
+
+package com.example.airis
+
+import android.content.Context
+import org.json.JSONArray
+/**
+ * [수정됨] 작품 데이터 클래스
+ * Python의 art_data.json 구조(title, category, vector)와 일치시킴
+ */
+data class Artwork(
+    val title: String,      // 작품명 (기존 id -> title)
+    val category: String,   // 카테고리 (새로 추가됨)
+    val vector: FloatArray  // 벡터 (기존 embedding -> vector)
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (javaClass != other?.javaClass) return false
+        other as Artwork
+        if (title != other.title) return false
+        if (!vector.contentEquals(other.vector)) return false
+        return true
+    }
+
+    override fun hashCode(): Int {
+        var result = title.hashCode()
+        result = 31 * result + vector.contentHashCode()
+        return result
+    }
+}
+
+/**
+ * [수정됨] 작품 로더 클래스
+ */
+class ArtworkLoader(private val context: Context) {
+
+    private var artworks: List<Artwork>? = null
+
+    fun loadArtworks(fileName: String = "art_data.json"): List<Artwork> {
+        if (artworks != null) return artworks!!
+
+        try {
+            val jsonString = readJsonFromAssets(fileName)
+
+            // Python은 리스트 [...] 형태로 저장하므로 JSONArray로 바로 시작
+            val jsonArray = JSONArray(jsonString)
+            val loadedArtworks = mutableListOf<Artwork>()
+
+            for (i in 0 until jsonArray.length()) {
+                val obj = jsonArray.getJSONObject(i)
+
+                // Python 코드의 키 값(title, vector)과 일치시킴
+                val title = obj.getString("title")
+                val category = obj.getString("category")
+
+                val vectorArray = obj.getJSONArray("vector")
+                val vector = FloatArray(vectorArray.length()) { index ->
+                    vectorArray.getDouble(index).toFloat()
+                }
+
+                loadedArtworks.add(Artwork(title, category, vector))
+            }
+
+            artworks = loadedArtworks
+            println("✅ 작품 DB 로드 완료: ${loadedArtworks.size}개")
+            return loadedArtworks
+
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return emptyList()
+        }
+    }
+
+    private fun readJsonFromAssets(fileName: String): String {
+        return context.assets.open(fileName).bufferedReader().use { it.readText() }
     }
 }
