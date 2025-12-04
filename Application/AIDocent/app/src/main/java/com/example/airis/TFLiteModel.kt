@@ -2,103 +2,67 @@ package com.example.airis
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
+import android.util.Log
 import org.tensorflow.lite.Interpreter
-import java.io.FileInputStream
+import org.tensorflow.lite.support.common.FileUtil
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.nio.MappedByteBuffer
-import java.nio.channels.FileChannel
-import kotlin.math.min
 
-/**
- * CLIP 모델용 TFLite 래퍼
- * - 모델명: art_clip_model.tflite
- * - 전처리: (Pixel - Mean) / Std
- */
-class TFLiteModel(
-    context: Context,
-    // 🔥 [수정] 기본 모델명을 CLIP 모델로 변경
-    modelFileName: String = "art_clip_model.tflite"
-) {
+class TFLiteModel(context: Context) {
 
     private var interpreter: Interpreter? = null
-    private val inputSize = 224
-    private val imageByteSize = inputSize * inputSize * 3 * 4
-    private val embeddingSize = 128
+
+    // CLIP 정규화 상수
+    private val MEAN = floatArrayOf(0.48145466f, 0.4578275f, 0.40821073f)
+    private val STD = floatArrayOf(0.26862954f, 0.26130258f, 0.27577711f)
+    private val IMAGE_SIZE = 224
 
     init {
         try {
-            val modelBuffer = loadModelFile(context, modelFileName)
-            val options = Interpreter.Options().apply { setNumThreads(4) }
-            interpreter = Interpreter(modelBuffer, options)
-            println("✅ CLIP 모델 로드 완료: $modelFileName")
+            val options = Interpreter.Options()
+            // GPU 사용 가능 시: options.addDelegate(GpuDelegate())
+            interpreter = Interpreter(FileUtil.loadMappedFile(context, "art_clip_model.tflite"), options)
         } catch (e: Exception) {
-            e.printStackTrace()
-            println("❌ 모델 로드 실패: ${e.message}")
+            Log.e("TFLiteModel", "모델 초기화 실패", e)
         }
     }
 
-    private fun loadModelFile(context: Context, modelFileName: String): MappedByteBuffer {
-        val fileDescriptor = context.assets.openFd(modelFileName)
-        val inputStream = FileInputStream(fileDescriptor.fileDescriptor)
-        val fileChannel = inputStream.channel
-        return fileChannel.map(FileChannel.MapMode.READ_ONLY, fileDescriptor.startOffset, fileDescriptor.declaredLength)
-    }
-
+    // 이름 변경: getEmbedding -> extractEmbedding (호출부와 일치)
+    // 반환 타입 변경: FloatArray -> FloatArray? (실패 시 null 처리)
     fun extractEmbedding(bitmap: Bitmap): FloatArray? {
         if (interpreter == null) return null
+
         try {
-            val inputBuffer = preprocessImage(bitmap)
-            val outputBuffer = Array(1) { FloatArray(embeddingSize) }
+            // 1. 리사이즈
+            val resizedBitmap = Bitmap.createScaledBitmap(bitmap, IMAGE_SIZE, IMAGE_SIZE, true)
+
+            // 2. 입력 버퍼 (1 * 224 * 224 * 3 * 4bytes)
+            val inputBuffer = ByteBuffer.allocateDirect(1 * IMAGE_SIZE * IMAGE_SIZE * 3 * 4)
+            inputBuffer.order(ByteOrder.nativeOrder())
+
+            val intValues = IntArray(IMAGE_SIZE * IMAGE_SIZE)
+            resizedBitmap.getPixels(intValues, 0, IMAGE_SIZE, 0, 0, IMAGE_SIZE, IMAGE_SIZE)
+
+            // 3. 전처리 (Normalization)
+            for (pixelValue in intValues) {
+                val r = (pixelValue shr 16) and 0xFF
+                val g = (pixelValue shr 8) and 0xFF
+                val b = pixelValue and 0xFF
+
+                inputBuffer.putFloat(((r / 255.0f) - MEAN[0]) / STD[0])
+                inputBuffer.putFloat(((g / 255.0f) - MEAN[1]) / STD[1])
+                inputBuffer.putFloat(((b / 255.0f) - MEAN[2]) / STD[2])
+            }
+
+            // 4. 추론
+            val outputBuffer = Array(1) { FloatArray(128) }
             interpreter?.run(inputBuffer, outputBuffer)
+
             return outputBuffer[0]
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e("TFLiteModel", "임베딩 추출 중 오류", e)
             return null
         }
-    }
-
-    /**
-     * 🔥 [핵심] CLIP 전용 전처리 (Letterbox + Mean/Std 정규화)
-     */
-    private fun preprocessImage(bitmap: Bitmap): ByteBuffer {
-        // 1. Letterbox Resizing
-        val targetW = inputSize
-        val targetH = inputSize
-        val scale = min(targetW.toFloat() / bitmap.width, targetH.toFloat() / bitmap.height)
-        val scaledW = (bitmap.width * scale).toInt()
-        val scaledH = (bitmap.height * scale).toInt()
-
-        val scaledBitmap = Bitmap.createScaledBitmap(bitmap, scaledW, scaledH, true)
-        val bgBitmap = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bgBitmap)
-        canvas.drawColor(Color.BLACK)
-        canvas.drawBitmap(scaledBitmap, (targetW - scaledW) / 2f, (targetH - scaledH) / 2f, Paint(Paint.FILTER_BITMAP_FLAG))
-
-        // 2. Normalization (CLIP Mean/Std 적용)
-        val inputBuffer = ByteBuffer.allocateDirect(imageByteSize)
-        inputBuffer.order(ByteOrder.nativeOrder())
-        val intValues = IntArray(inputSize * inputSize)
-        bgBitmap.getPixels(intValues, 0, inputSize, 0, 0, inputSize, inputSize)
-
-        // CLIP 공식 상수 (RGB 순서)
-        val mean = floatArrayOf(0.48145466f, 0.4578275f, 0.40821073f)
-        val std = floatArrayOf(0.26862954f, 0.26130258f, 0.27577711f)
-
-        for (pixel in intValues) {
-            val r = ((pixel shr 16) and 0xFF) / 255.0f
-            val g = ((pixel shr 8) and 0xFF) / 255.0f
-            val b = (pixel and 0xFF) / 255.0f
-
-            // 🔥 (값 - 평균) / 표준편차
-            inputBuffer.putFloat((r - mean[0]) / std[0])
-            inputBuffer.putFloat((g - mean[1]) / std[1])
-            inputBuffer.putFloat((b - mean[2]) / std[2])
-        }
-        return inputBuffer
     }
 
     fun close() {
