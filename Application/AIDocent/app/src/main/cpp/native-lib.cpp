@@ -66,11 +66,10 @@ Java_com_example_airis_NativeBridge_initSession(JNIEnv* env, jobject /* this */)
     
 
     llama_context_params ctx_params = llama_context_default_params();
-    ctx_params.n_threads = 8;
+    ctx_params.n_threads = 6;
     ctx_params.n_threads_batch = 8;
-    params.n_gpu_layers = 30;
-    ctx_params.n_ctx = 2048;
-    ctx_params.n_batch = 2048;
+    ctx_params.n_ctx = 1024;
+    ctx_params.n_batch = 1024;
 
     LOGI("Creating context with %d threads, ctx_size: %d, batch_size: %d",
          ctx_params.n_threads, ctx_params.n_ctx, ctx_params.n_batch);
@@ -94,10 +93,9 @@ Java_com_example_airis_NativeBridge_initSession(JNIEnv* env, jobject /* this */)
     }
 
     // Add sampler filters: greedy + min_p + temperature + distribution
-    llama_sampler_chain_add(session_sampler, llama_sampler_init_top_k(20));
     llama_sampler_chain_add(session_sampler, llama_sampler_init_top_p(0.8f, 1));
     llama_sampler_chain_add(session_sampler, llama_sampler_init_min_p(0.0f, 1));
-    llama_sampler_chain_add(session_sampler, llama_sampler_init_temp(0.7f));
+    llama_sampler_chain_add(session_sampler, llama_sampler_init_temp(0.4f));
     llama_sampler_chain_add(session_sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
     LOGI("Sampler initialized");
 
@@ -364,15 +362,6 @@ Java_com_example_airis_NativeBridge_generateStreaming(JNIEnv* env, jobject /* th
             }
         }
         
-        // 연속된 줄바꿈 2개 이상 감지 (답변 완료 신호)
-        if (accumulated_text.length() >= 2) {
-            std::string last_chars = accumulated_text.substr(accumulated_text.length() - 2);
-            if (last_chars == "\n\n") {
-                LOGI("Double newline detected, stopping generation");
-                should_stop = true;
-            }
-        }
-
         // Stream token via callback to Kotlin/UI
         jstring jpiece = env->NewStringUTF(piece_str.c_str());
         env->CallObjectMethod(callback, invokeMethod, jpiece);

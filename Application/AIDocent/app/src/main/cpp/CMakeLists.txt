@@ -21,7 +21,6 @@ target_link_libraries(airis PRIVATE
     log
     android
 )
-
 # JNI 함수 이름과 일치시키기 위한 설정
 set_target_properties(airis PROPERTIES
     LIBRARY_OUTPUT_NAME "airis"

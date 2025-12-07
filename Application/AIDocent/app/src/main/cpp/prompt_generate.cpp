@@ -5,13 +5,13 @@
 // Helper function to format artwork information
 static std::string formatArtworkInfo() {
     // Hardcoded artwork information
-    const std::string title = "The Starry Night";
-    const std::string objectDate = "1889";
-    const std::string culture = "Dutch";
-    const std::string artistDisplayName = "Vincent van Gogh";
+    const std::string title = "I and the Village";
+    const std::string objectDate = "1911";
+    const std::string culture = "Russian-Jewish";
+    const std::string artistDisplayName = "Marc Chagall";
     const std::string medium = "Oil on canvas";
-    const std::string country = "Netherlands";
-    const std::string period = "Post-Impressionism";
+    const std::string country = "Russia";
+    const std::string period = "Modernism";
     
     std::ostringstream info;
     info << "[ARTWORK INFO]\n\n";
