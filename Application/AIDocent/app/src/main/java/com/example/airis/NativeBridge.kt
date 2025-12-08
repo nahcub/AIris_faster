@@ -21,6 +21,17 @@ object NativeBridge {
     // Prompt caching
     external fun decodeSystemPrompt(): Boolean
 
+    // Set artwork information
+    external fun setArtworkInfo(
+        title: String,
+        author: String,
+        type: String,
+        technique: String,
+        school: String,
+        date: String,
+        description: String
+    )
+
     // Streaming generation with real-time callback
     external fun generateStreaming(prompt: String, onToken: (String) -> Unit): Boolean
 

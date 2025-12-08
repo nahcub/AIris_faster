@@ -61,7 +61,6 @@ fun CameraPreviewScreen(
     // AI 인식 상태
     var isProcessing by remember { mutableStateOf(false) }
     var recognitionResult by remember { mutableStateOf<RecognitionResult?>(null) }
-    var showResultDialog by remember { mutableStateOf(false) }
 
     // 시스템 준비 상태 확인 (ArtRepository 싱글톤)
     val isSystemReady = ArtRepository.isLoaded
@@ -176,11 +175,6 @@ fun CameraPreviewScreen(
                 }
             }
         },
-        onDialogDismiss = {
-            showResultDialog = false
-            recognitionResult = null
-            statusMessage = "작품을 촬영하세요"
-        },
         onBackClick = onBackClick
     )
 }
@@ -197,9 +191,7 @@ fun CameraPreviewContent(
     errorMessage: String?,
     statusMessage: String,
     recognitionResult: RecognitionResult?,
-    showResultDialog: Boolean,
     onCaptureButtonClick: () -> Unit,
-    onDialogDismiss: () -> Unit,
     onBackClick: () -> Unit
 ) {
     Scaffold(
@@ -311,9 +303,6 @@ fun CameraPreviewContent(
             }
 
             // 결과 팝업 다이얼로그
-            if (showResultDialog && recognitionResult != null) {
-                RecognitionResultDialog(recognitionResult, onDialogDismiss)
-            }
         }
     }
 }
@@ -502,6 +491,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.navigation.NavController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -523,11 +513,12 @@ data class RecognitionResult(
 /**
  * 카메라 프리뷰 화면
  * - ArtRepository(싱글톤)를 사용하여 메모리 효율성 및 속도 개선
- * - 촬영 -> 임베딩 추출 -> 유사도 검색 -> 결과 팝업
+ * - 촬영 -> 임베딩 추출 -> 유사도 검색 -> LlamaScreen으로 자동 전환
  */
 @Composable
 fun CameraPreviewScreen(
-    onBackClick: () -> Unit = {}
+    onBackClick: () -> Unit = {},
+    navController: NavController? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
 
@@ -540,7 +531,6 @@ fun CameraPreviewScreen(
     // AI 인식 상태
     var isProcessing by remember { mutableStateOf(false) }
     var recognitionResult by remember { mutableStateOf<RecognitionResult?>(null) }
-    var showResultDialog by remember { mutableStateOf(false) }
 
     // 시스템 준비 상태 확인 (DB 로딩 완료 여부)
     val isSystemReady = ArtRepository.isLoaded
@@ -553,7 +543,6 @@ fun CameraPreviewScreen(
         errorMessage = errorMessage,
         statusMessage = if (!isSystemReady) "데이터 로딩 중..." else statusMessage,
         recognitionResult = recognitionResult,
-        showResultDialog = showResultDialog,
         onCaptureButtonClick = {
             // 1. 데이터 로딩 확인
             if (!isSystemReady) {
@@ -614,13 +603,33 @@ fun CameraPreviewScreen(
 
                                                     if (info != null) {
                                                         Log.d(TAG, "✅ 매칭 성공: ${info.title} ($score)")
+                                                        
+                                                        // C++에 작품 정보 전달
+                                                        withContext(Dispatchers.Default) {
+                                                            NativeBridge.setArtworkInfo(
+                                                                title = info.title,
+                                                                author = info.author,
+                                                                type = info.type,
+                                                                technique = info.technique,
+                                                                school = info.school,
+                                                                date = info.date,
+                                                                description = info.description
+                                                            )
+                                                        }
+                                                        
                                                         recognitionResult = RecognitionResult(
                                                             artwork = info,
                                                             similarity = score,
-                                                            debugBitmap = processedBitmap  // 🔥 [추가]
+                                                            debugBitmap = processedBitmap
                                                         )
-                                                        showResultDialog = true
-                                                        statusMessage = "완료"
+                                                        
+                                                        // LlamaScreen으로 자동 전환
+                                                        withContext(Dispatchers.Main) {
+                                                            statusMessage = "완료"
+                                                            navController?.navigate("llama_test") {
+                                                                popUpTo("camera_preview") { inclusive = false }
+                                                            }
+                                                        }
                                                     } else {
                                                         // 인덱스엔 있는데 메타데이터가 없는 경우
                                                         errorMessage = "작품 정보 누락 ($id)"
@@ -659,11 +668,6 @@ fun CameraPreviewScreen(
                 }
             }
         },
-        onDialogDismiss = {
-            showResultDialog = false
-            recognitionResult = null
-            statusMessage = "작품을 촬영하세요"
-        },
         onBackClick = onBackClick
     )
 }
@@ -680,9 +684,7 @@ fun CameraPreviewContent(
     errorMessage: String?,
     statusMessage: String,
     recognitionResult: RecognitionResult?,
-    showResultDialog: Boolean,
     onCaptureButtonClick: () -> Unit,
-    onDialogDismiss: () -> Unit,
     onBackClick: () -> Unit
 ) {
     Scaffold(
@@ -805,9 +807,6 @@ fun CameraPreviewContent(
             }
 
             // 결과 팝업 다이얼로그
-            if (showResultDialog && recognitionResult != null) {
-                RecognitionResultDialog(recognitionResult, onDialogDismiss)
-            }
         }
     }
 }

@@ -308,7 +308,10 @@ fun AppNavigation(
         }
 
         composable("camera_preview") {
-            CameraPreviewScreen(onBackClick = { navController.popBackStack() })
+            CameraPreviewScreen(
+                onBackClick = { navController.popBackStack() },
+                navController = navController
+            )
         }
 
         composable("myhistory") {
@@ -324,7 +327,8 @@ fun AppNavigation(
             LlamaScreen(
                 onBackClick = {
                     navController.popBackStack()
-                }
+                },
+                autoInitialize = true
             )
         }
     }

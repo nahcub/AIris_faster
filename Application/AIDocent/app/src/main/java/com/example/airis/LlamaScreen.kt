@@ -20,7 +20,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 @Composable
-fun LlamaScreen(onBackClick: () -> Unit = {}) {
+fun LlamaScreen(
+    onBackClick: () -> Unit = {},
+    autoInitialize: Boolean = false
+) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var modelLoaded by remember { mutableStateOf(false) }
@@ -31,6 +34,7 @@ fun LlamaScreen(onBackClick: () -> Unit = {}) {
     var generatedText by remember { mutableStateOf("") }
     var isGenerating by remember { mutableStateOf(false) }
     var generationStats by remember { mutableStateOf<String?>(null) }
+    var isAutoInitializing by remember { mutableStateOf(false) }
 
     // 화면 종료 시 세션 정리
     DisposableEffect(Unit) {
@@ -38,6 +42,66 @@ fun LlamaScreen(onBackClick: () -> Unit = {}) {
             if (sessionInitialized) {
                 NativeBridge.closeSession()
                 Log.d("LlamaScreen", "Session closed on screen dispose")
+            }
+        }
+    }
+
+    // 자동 초기화 로직
+    LaunchedEffect(autoInitialize) {
+        if (autoInitialize && !modelLoaded && !isAutoInitializing) {
+            isAutoInitializing = true
+            try {
+                val appFilesDir = context.getExternalFilesDir(null)
+                val modelFile = File(appFilesDir, "Qwen3-0.6B-IQ4_NL.gguf")
+                val path = modelFile.absolutePath
+                
+                if (!modelFile.exists()) {
+                    statusText = "⚠️ File not found!\nCopy model to:\n$path"
+                    isAutoInitializing = false
+                    return@LaunchedEffect
+                }
+                
+                statusText = "Loading model..."
+                // 모델 로드는 백그라운드 스레드에서 실행
+                val loaded = withContext(Dispatchers.Default) {
+                    NativeBridge.loadModel(path)
+                }
+                
+                if (loaded) {
+                    modelLoaded = true
+                    statusText = "✅ Model loaded!\n\nInitializing session..."
+
+                    // 세션 초기화 (컨텍스트와 샘플러 생성)
+                    val sessionInit = withContext(Dispatchers.Default) {
+                        NativeBridge.initSession()
+                    }
+
+                    if (sessionInit) {
+                        sessionInitialized = true
+                        statusText = "✅ Session initialized!\n\nDecoding system prompt..."
+
+                        // 시스템 프롬프트 디코딩
+                        val decoded = withContext(Dispatchers.Default) {
+                            NativeBridge.decodeSystemPrompt()
+                        }
+                        
+                        if (decoded) {
+                            systemPromptDecoded = true
+                            statusText = "✅ System prompt cached!\n\n⚡ Ready for fast generation!\n\nYou can now ask questions."
+                        } else {
+                            statusText = "❌ Failed to decode system prompt.\nCheck logcat for details."
+                        }
+                    } else {
+                        statusText = "❌ Failed to initialize session.\nCheck logcat for details."
+                    }
+                } else {
+                    statusText = "❌ Failed to load model.\nCheck logcat for details."
+                }
+            } catch (e: Exception) {
+                statusText = "Error: ${e.message}"
+                Log.e("LlamaScreen", "Auto initialization error", e)
+            } finally {
+                isAutoInitializing = false
             }
         }
     }
@@ -93,8 +157,8 @@ fun LlamaScreen(onBackClick: () -> Unit = {}) {
         
         Spacer(modifier = Modifier.height(16.dp))
         
-        // 모델 로드 버튼들
-        if (!modelLoaded) {
+        // 모델 로드 버튼들 (자동 초기화 중이면 숨김)
+        if (!modelLoaded && !isAutoInitializing) {
             Button(
                 onClick = {
                     coroutineScope.launch {
@@ -142,8 +206,8 @@ fun LlamaScreen(onBackClick: () -> Unit = {}) {
                 Text("Load Model from App Storage")
             }
         } else {
-            // 모델이 로드된 후
-            if (sessionInitialized && !systemPromptDecoded) {
+            // 모델이 로드된 후 (자동 초기화 중이면 숨김)
+            if (sessionInitialized && !systemPromptDecoded && !isAutoInitializing) {
                 // 시스템 프롬프트 디코딩 버튼
                 Button(
                     onClick = {

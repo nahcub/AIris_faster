@@ -190,6 +190,44 @@ Java_com_example_airis_NativeBridge_decodeSystemPrompt(JNIEnv* env, jobject /* t
     return JNI_TRUE;
 }
 
+// Set artwork information from Kotlin
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_airis_NativeBridge_setArtworkInfo(JNIEnv* env, jobject /* this */,
+    jstring title_, jstring author_, jstring type_, jstring technique_,
+    jstring school_, jstring date_, jstring description_) {
+    
+    const char* title = env->GetStringUTFChars(title_, nullptr);
+    const char* author = env->GetStringUTFChars(author_, nullptr);
+    const char* type = env->GetStringUTFChars(type_, nullptr);
+    const char* technique = env->GetStringUTFChars(technique_, nullptr);
+    const char* school = env->GetStringUTFChars(school_, nullptr);
+    const char* date = env->GetStringUTFChars(date_, nullptr);
+    const char* description = env->GetStringUTFChars(description_, nullptr);
+    
+    LOGI("Setting artwork info: %s by %s", title, author);
+    
+    setArtworkInfo(
+        std::string(title ? title : ""),
+        std::string(author ? author : ""),
+        std::string(type ? type : ""),
+        std::string(technique ? technique : ""),
+        std::string(school ? school : ""),
+        std::string(date ? date : ""),
+        std::string(description ? description : "")
+    );
+    
+    env->ReleaseStringUTFChars(title_, title);
+    env->ReleaseStringUTFChars(author_, author);
+    env->ReleaseStringUTFChars(type_, type);
+    env->ReleaseStringUTFChars(technique_, technique);
+    env->ReleaseStringUTFChars(school_, school);
+    env->ReleaseStringUTFChars(date_, date);
+    env->ReleaseStringUTFChars(description_, description);
+    
+    LOGI("Artwork info set successfully");
+}
+
 // Clean up session: free sampler and context
 extern "C"
 JNIEXPORT void JNICALL
