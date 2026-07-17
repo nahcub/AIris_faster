@@ -3,7 +3,9 @@
 # llama.cpp source is too large to commit - kept locally only
 Application/AIDocent/app/src/main/cpp/llama.cpp/
 
-# Build artifacts
-Application/AIDocent/app/.idea/
+# Build artifacts / IDE local state
+Application/.idea/
+Application/AIDocent/.idea/
+Application/AIDocent/.vscode/
 Application/AIDocent/app/build/
 Application/AIDocent/.kotlin/
