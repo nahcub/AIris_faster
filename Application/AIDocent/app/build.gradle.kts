@@ -19,7 +19,9 @@ android {
         
         // NDK 설정 추가
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            // llama.cpp's ggml-cpu sgemm.cpp uses fp16 NEON intrinsics that are
+            // unavailable on armeabi-v7a, so that ABI fails to compile.
+            abiFilters += listOf("arm64-v8a")
         }
         
         externalNativeBuild {
