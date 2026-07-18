@@ -27,6 +27,7 @@ fun LlamaScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var modelLoaded by remember { mutableStateOf(false) }
+    val engine = remember{EngineFactory.create(EngineType.LLAMA_CPP)}
     var sessionInitialized by remember { mutableStateOf(false) }
     var systemPromptDecoded by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("Ready to load model.") }
@@ -40,7 +41,7 @@ fun LlamaScreen(
     DisposableEffect(Unit) {
         onDispose {
             if (sessionInitialized) {
-                NativeBridge.closeSession()
+                engine.close()
                 Log.d("LlamaScreen", "Session closed on screen dispose")
             }
         }
@@ -64,7 +65,7 @@ fun LlamaScreen(
                 statusText = "Loading model..."
                 // 모델 로드는 백그라운드 스레드에서 실행
                 val loaded = withContext(Dispatchers.Default) {
-                    NativeBridge.loadModel(path)
+                    engine.loadModel(path)
                 }
                 
                 if (loaded) {
@@ -73,7 +74,7 @@ fun LlamaScreen(
 
                     // 세션 초기화 (컨텍스트와 샘플러 생성)
                     val sessionInit = withContext(Dispatchers.Default) {
-                        NativeBridge.initSession()
+                        engine.initSession()
                     }
 
                     if (sessionInit) {
@@ -82,7 +83,7 @@ fun LlamaScreen(
 
                         // 시스템 프롬프트 디코딩
                         val decoded = withContext(Dispatchers.Default) {
-                            NativeBridge.decodeSystemPrompt()
+                            engine.decodeSystemPrompt()
                         }
                         
                         if (decoded) {
@@ -175,7 +176,7 @@ fun LlamaScreen(
                             statusText = "Loading model..."
                             // 모델 로드는 백그라운드 스레드에서 실행
                             val loaded = withContext(Dispatchers.Default) {
-                                NativeBridge.loadModel(path)
+                                engine.loadModel(path)
                             }
                             
                             if (loaded) {
@@ -184,7 +185,7 @@ fun LlamaScreen(
 
                                 // 세션 초기화 (컨텍스트와 샘플러 생성)
                                 val sessionInit = withContext(Dispatchers.Default) {
-                                    NativeBridge.initSession()
+                                    engine.initSession()
                                 }
 
                                 if (sessionInit) {
@@ -215,7 +216,7 @@ fun LlamaScreen(
                             try {
                                 statusText = "Decoding system prompt (artwork info)..."
                                 val decoded = withContext(Dispatchers.Default) {
-                                    NativeBridge.decodeSystemPrompt()
+                                    engine.decodeSystemPrompt()
                                 }
                                 
                                 if (decoded) {
@@ -284,8 +285,8 @@ fun LlamaScreen(
 
                                     val success = withTimeoutOrNull(300000) { // 5분 타임아웃
                                         withContext(Dispatchers.Default) {
-                                            Log.d("LlamaScreen", "Calling NativeBridge.generateStreaming with session...")
-                                            NativeBridge.generateStreaming(userInput.trim()) { token ->
+                                            Log.d("LlamaScreen", "Calling engine.generateStreaming with session...")
+                                            engine.generateStreaming(userInput.trim()) { token ->
                                                 // 토큰이 생성될 때마다 UI 업데이트
                                                 Log.d("LlamaScreen", "Received token: $token")
                                                 generatedText += token

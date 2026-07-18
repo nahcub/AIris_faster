@@ -250,6 +250,39 @@ Java_com_example_airis_NativeBridge_closeSession(JNIEnv* env, jobject /* this */
     LOGI("Session closed");
 }
 
+// UTF-8 안전 헬퍼: s의 앞부분 중 "완성된 UTF-8 문자"들만의 바이트 길이를 돌려준다.
+// 끝에 잘린 멀티바이트 꼬리(예: 이모지/한글의 앞 몇 바이트만 온 경우)가 있으면 그 앞까지의 길이를 반환.
+// llama.cpp는 토큰 단위로 뱉는데 한 토큰이 멀티바이트 문자를 쪼갤 수 있어, 이 꼬리를 잘라 두고
+// 다음 토큰과 합쳐야 NewStringUTF가 앱을 강제종료(SIGABRT)시키지 않는다.
+static size_t utf8_complete_prefix_len(const std::string& s) {
+    size_t len = s.size();
+    if (len == 0) return 0;
+
+    // 마지막 문자의 시작(lead byte)까지 continuation 바이트(10xxxxxx)를 거슬러 올라간다.
+    size_t i = len;
+    while (i > 0 && ((unsigned char)s[i - 1] & 0xC0) == 0x80) {
+        i--;
+    }
+    if (i == 0) {
+        // lead 없이 continuation만 남은 깨진 데이터 — 무한 보관을 피하려고 전부 완성으로 취급.
+        return len;
+    }
+
+    unsigned char lead = (unsigned char)s[i - 1];
+    size_t expected;
+    if ((lead & 0x80) == 0x00) expected = 1;        // 0xxxxxxx (ASCII)
+    else if ((lead & 0xE0) == 0xC0) expected = 2;   // 110xxxxx
+    else if ((lead & 0xF0) == 0xE0) expected = 3;   // 1110xxxx
+    else if ((lead & 0xF8) == 0xF0) expected = 4;   // 11110xxx
+    else expected = 1;                              // 잘못된 lead — 1바이트로 취급
+
+    size_t have = len - (i - 1);   // lead 이후 실제로 갖고 있는 바이트 수
+    if (have >= expected) {
+        return len;                // 마지막 문자가 완성됨 → 전부 보내도 됨
+    }
+    return i - 1;                  // 마지막 문자가 미완성 → 그 앞까지만 보냄
+}
+
 // Session-based streaming text generation with real-time callback
 extern "C"
 JNIEXPORT jboolean JNICALL
@@ -358,6 +391,9 @@ Java_com_example_airis_NativeBridge_generateStreaming(JNIEnv* env, jobject /* th
     // 생성된 텍스트를 누적하여 추적
     std::string accumulated_text = "";
 
+    // UI로 아직 못 보낸 "잘린 UTF-8 꼬리"를 보관하는 버퍼 (멀티바이트 문자 안전 전송용)
+    std::string utf8_pending = "";
+
     LOGI("Starting streaming generation loop, max tokens: %d", n_max_gen);
 
     while (n_cur < n_max_gen) {
@@ -401,16 +437,25 @@ Java_com_example_airis_NativeBridge_generateStreaming(JNIEnv* env, jobject /* th
         }
         
         // Stream token via callback to Kotlin/UI
-        jstring jpiece = env->NewStringUTF(piece_str.c_str());
-        env->CallObjectMethod(callback, invokeMethod, jpiece);
-        env->DeleteLocalRef(jpiece);
+        // 이번 조각을 버퍼에 붙이고, "완성된 UTF-8 부분"만 잘라서 보낸다.
+        // 잘린 멀티바이트 꼬리는 utf8_pending에 남아 다음 토큰과 합쳐진다.
+        utf8_pending += piece_str;
+        size_t flush_len = utf8_complete_prefix_len(utf8_pending);
+        if (flush_len > 0) {
+            std::string to_send = utf8_pending.substr(0, flush_len);
+            utf8_pending.erase(0, flush_len);
 
-        // Handle callback exceptions
-        if (env->ExceptionCheck()) {
-            LOGE("Exception occurred during callback");
-            env->ExceptionDescribe();
-            env->ExceptionClear();
-            break;
+            jstring jpiece = env->NewStringUTF(to_send.c_str());
+            env->CallObjectMethod(callback, invokeMethod, jpiece);
+            env->DeleteLocalRef(jpiece);
+
+            // Handle callback exceptions
+            if (env->ExceptionCheck()) {
+                LOGE("Exception occurred during callback");
+                env->ExceptionDescribe();
+                env->ExceptionClear();
+                break;
+            }
         }
 
         // Stop sequence 감지 시 중단
