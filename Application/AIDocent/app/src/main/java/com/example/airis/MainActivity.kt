@@ -13,7 +13,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             AIrisTheme {
-                LlamaScreen(autoInitialize = true)
+                InferenceScreen(autoInitialize = true)
             }
         }
     }

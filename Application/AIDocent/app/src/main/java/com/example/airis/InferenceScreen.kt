@@ -19,8 +19,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
+private const val MODEL_FILE_NAME = "Qwen3-0.6B-IQ4_NL.gguf"
+
 @Composable
-fun LlamaScreen(
+fun InferenceScreen(
     onBackClick: () -> Unit = {},
     autoInitialize: Boolean = false
 ) {
@@ -42,7 +44,7 @@ fun LlamaScreen(
         onDispose {
             if (sessionInitialized) {
                 engine.close()
-                Log.d("LlamaScreen", "Session closed on screen dispose")
+                Log.d("InferenceScreen", "Session closed on screen dispose")
             }
         }
     }
@@ -100,7 +102,7 @@ fun LlamaScreen(
                 }
             } catch (e: Exception) {
                 statusText = "Error: ${e.message}"
-                Log.e("LlamaScreen", "Auto initialization error", e)
+                Log.e("InferenceScreen", "Auto initialization error", e)
             } finally {
                 isAutoInitializing = false
             }
@@ -279,16 +281,18 @@ fun LlamaScreen(
                             // 코루틴을 사용하여 백그라운드 스레드에서 스트리밍 생성
                             coroutineScope.launch {
                                 try {
-                                    Log.d("LlamaScreen", "Starting streaming generation (session-based)...")
+                                    Log.d("InferenceScreen", "Starting streaming generation (session-based)...")
                                     val startTime = System.currentTimeMillis()
                                     var tokenCount = 0
+                                    var firstTokenTime = 0L
 
                                     val success = withTimeoutOrNull(300000) { // 5분 타임아웃
                                         withContext(Dispatchers.Default) {
-                                            Log.d("LlamaScreen", "Calling engine.generateStreaming with session...")
+                                            Log.d("InferenceScreen", "Calling engine.generateStreaming with session...")
                                             engine.generateStreaming(userInput.trim()) { token ->
                                                 // 토큰이 생성될 때마다 UI 업데이트
-                                                Log.d("LlamaScreen", "Received token: $token")
+                                                if(firstTokenTime == 0L) firstTokenTime = System.currentTimeMillis()
+                                                Log.d("InferenceScreen", "Received token: $token")
                                                 generatedText += token
                                                 tokenCount++
                                             }
@@ -296,32 +300,50 @@ fun LlamaScreen(
                                     }
 
                                     val endTime = System.currentTimeMillis()
-                                    val elapsedSeconds = (endTime - startTime) / 1000.0
-                                    val tokensPerSecond = if (elapsedSeconds > 0) tokenCount / elapsedSeconds else 0.0
+                                    val totalSeconds = (endTime - startTime) / 1000.0
+                                    val ttftSeconds = if (firstTokenTime > 0L) (firstTokenTime - startTime) / 1000.0 else 0.0
+                                    val decodeSeconds = if (firstTokenTime > 0L) (endTime - firstTokenTime) / 1000.0 else 0.0
+                                    // 첫 토큰은 TTFT에 포함 → 순수 decode 구간엔 나머지(tokenCount-1)개
+                                    val decodeTokPerSec = if (decodeSeconds > 0) (tokenCount - 1).coerceAtLeast(0) / decodeSeconds else 0.0
 
-                                    Log.d("LlamaScreen", "Streaming completed: ${success != null}")
+                                    Log.d("InferenceScreen", "Streaming completed: ${success != null}")
 
                                     if (success == true) {
-                                        Log.d("LlamaScreen", "Streaming generation successful")
+                                        Log.d("InferenceScreen", "Streaming generation successful")
                                         statusText = "✅ Response generated!"
                                         generationStats = String.format(
-                                            "⏱️ Total time: %.2fs | Tokens: %d | Speed: %.2f tokens/sec",
-                                            elapsedSeconds,
-                                            tokenCount,
-                                            tokensPerSecond
+                                            "TTFT: %.2fs | Decode: %.1f tok/s | Total: %.2fs | Tokens: %d",
+                                            ttftSeconds,
+                                            decodeTokPerSec,
+                                            totalSeconds,
+                                            tokenCount
                                         )
+                                        withContext(Dispatchers.IO){
+                                            BenchmarkLogger.append(
+                                                context,
+                                                BenchmarkRecord(
+                                                    engine = engine.name,
+                                                    model = "Qwen3-0.6B-IQ4_NL",
+                                                    prompt = userInput.trim(),
+                                                    ttftSec = ttftSeconds,
+                                                    decodeTokPerSec = decodeTokPerSec,
+                                                    totalSec = totalSeconds,
+                                                    tokenCount = tokenCount
+                                                )
+                                            )
+                                        }
                                     } else if (success == false) {
-                                        Log.w("LlamaScreen", "Streaming generation failed")
+                                        Log.w("InferenceScreen", "Streaming generation failed")
                                         statusText = "❌ Generation failed. Check logcat for details (filter: LlamaNative)"
                                     } else {
-                                        Log.w("LlamaScreen", "Generation timed out")
+                                        Log.w("InferenceScreen", "Generation timed out")
                                         statusText = "⏱️ Generation timed out after 5 minutes.\n\nCheck logcat for details (filter: LlamaNative)"
                                     }
                                 } catch (e: Exception) {
-                                    Log.e("LlamaScreen", "Error during generation", e)
-                                    statusText = "❌ Error: ${e.message}\n\nCheck logcat for details (filter: LlamaNative or LlamaScreen)"
+                                    Log.e("InferenceScreen", "Error during generation", e)
+                                    statusText = "❌ Error: ${e.message}\n\nCheck logcat for details (filter: LlamaNative or InferenceScreen)"
                                 } finally {
-                                    Log.d("LlamaScreen", "Finally block: setting isGenerating = false")
+                                    Log.d("InferenceScreen", "Finally block: setting isGenerating = false")
                                     isGenerating = false
                                 }
                             }
