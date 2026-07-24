@@ -19,6 +19,10 @@ class LlamaCppEngine : InferenceEngine{
         return NativeBridge.decodeSystemPrompt()
     }
 
+    override fun resetToSystemPrompt(): Boolean{
+        return NativeBridge.resetToSystemPrompt()
+    }
+
     override fun generateStreaming(prompt: String, onToken:(String)-> Unit): Boolean{
         return NativeBridge.generateStreaming(prompt, onToken)
     }

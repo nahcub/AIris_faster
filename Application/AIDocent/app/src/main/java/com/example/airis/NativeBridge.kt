@@ -18,6 +18,9 @@ object NativeBridge {
     external fun initSession(): Boolean
     external fun closeSession()
 
+    // 벤치마크용: KV 캐시를 시스템 프롬프트까지 되감아 회차 간 독립을 보장
+    external fun resetToSystemPrompt(): Boolean
+
     // Prompt caching
     external fun decodeSystemPrompt(): Boolean
 

@@ -36,8 +36,9 @@ private val LightColorScheme = lightColorScheme(
 @Composable
 fun AIrisTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
+    // Dynamic color(배경화면 기반 팔레트)를 끄고 대비가 보장된 고정 팔레트 사용.
+    // 벤치마크 도구라 색이 폰마다 달라지지 않고 예측 가능한 게 낫다.
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {

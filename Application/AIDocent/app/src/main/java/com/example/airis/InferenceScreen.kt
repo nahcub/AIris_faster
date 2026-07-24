@@ -16,14 +16,14 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 private const val MODEL_FILE_NAME = "Qwen3-0.6B-IQ4_NL.gguf"
+// 벤치 기록용 모델 라벨은 파일명에서 파생 (확장자만 제거)
+private val MODEL_NAME = MODEL_FILE_NAME.removeSuffix(".gguf")
 
 @Composable
 fun InferenceScreen(
-    onBackClick: () -> Unit = {},
     autoInitialize: Boolean = false
 ) {
     val context = LocalContext.current
@@ -112,7 +112,8 @@ fun InferenceScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .systemBarsPadding()   // edge-to-edge에서 상태바·내비게이션바에 안 가리도록
+            .padding(12.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         // 상태 표시
@@ -151,15 +152,15 @@ fun InferenceScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = generationStats!!,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.secondary
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
         }
         
-        Spacer(modifier = Modifier.height(16.dp))
-        
+        Spacer(modifier = Modifier.height(8.dp))
+
         // 모델 로드 버튼들 (자동 초기화 중이면 숨김)
         if (!modelLoaded && !isAutoInitializing) {
             Button(
@@ -278,72 +279,39 @@ fun InferenceScreen(
                             statusText = "⚡ Generating response (fast mode)..."
                             generationStats = null
 
-                            // 코루틴을 사용하여 백그라운드 스레드에서 스트리밍 생성
+                            // 측정은 BenchmarkRunner.runOnce에 위임 (reset → generate → 지표).
+                            // UI는 토큰 스트리밍과 결과 표시만 담당.
                             coroutineScope.launch {
                                 try {
-                                    Log.d("InferenceScreen", "Starting streaming generation (session-based)...")
-                                    val startTime = System.currentTimeMillis()
-                                    var tokenCount = 0
-                                    var firstTokenTime = 0L
-
-                                    val success = withTimeoutOrNull(300000) { // 5분 타임아웃
-                                        withContext(Dispatchers.Default) {
-                                            Log.d("InferenceScreen", "Calling engine.generateStreaming with session...")
-                                            engine.generateStreaming(userInput.trim()) { token ->
-                                                // 토큰이 생성될 때마다 UI 업데이트
-                                                if(firstTokenTime == 0L) firstTokenTime = System.currentTimeMillis()
-                                                Log.d("InferenceScreen", "Received token: $token")
-                                                generatedText += token
-                                                tokenCount++
-                                            }
-                                        }
+                                    val outcome = BenchmarkRunner.runOnce(
+                                        engine = engine,
+                                        prompt = userInput.trim(),
+                                        model = MODEL_NAME
+                                    ) { token ->
+                                        generatedText += token
                                     }
 
-                                    val endTime = System.currentTimeMillis()
-                                    val totalSeconds = (endTime - startTime) / 1000.0
-                                    val ttftSeconds = if (firstTokenTime > 0L) (firstTokenTime - startTime) / 1000.0 else 0.0
-                                    val decodeSeconds = if (firstTokenTime > 0L) (endTime - firstTokenTime) / 1000.0 else 0.0
-                                    // 첫 토큰은 TTFT에 포함 → 순수 decode 구간엔 나머지(tokenCount-1)개
-                                    val decodeTokPerSec = if (decodeSeconds > 0) (tokenCount - 1).coerceAtLeast(0) / decodeSeconds else 0.0
-
-                                    Log.d("InferenceScreen", "Streaming completed: ${success != null}")
-
-                                    if (success == true) {
-                                        Log.d("InferenceScreen", "Streaming generation successful")
-                                        statusText = "✅ Response generated!"
-                                        generationStats = String.format(
-                                            "TTFT: %.2fs | Decode: %.1f tok/s | Total: %.2fs | Tokens: %d",
-                                            ttftSeconds,
-                                            decodeTokPerSec,
-                                            totalSeconds,
-                                            tokenCount
-                                        )
-                                        withContext(Dispatchers.IO){
-                                            BenchmarkLogger.append(
-                                                context,
-                                                BenchmarkRecord(
-                                                    engine = engine.name,
-                                                    model = "Qwen3-0.6B-IQ4_NL",
-                                                    prompt = userInput.trim(),
-                                                    ttftSec = ttftSeconds,
-                                                    decodeTokPerSec = decodeTokPerSec,
-                                                    totalSec = totalSeconds,
-                                                    tokenCount = tokenCount
-                                                )
+                                    val rec = outcome.record
+                                    when {
+                                        rec != null -> {
+                                            statusText = "✅ Response generated!"
+                                            generationStats = String.format(
+                                                "TTFT: %.2fs | Decode: %.1f tok/s | Total: %.2fs | Tokens: %d",
+                                                rec.ttftSec, rec.decodeTokPerSec, rec.totalSec, rec.tokenCount
                                             )
+                                            withContext(Dispatchers.IO) {
+                                                BenchmarkLogger.append(context, rec)
+                                            }
                                         }
-                                    } else if (success == false) {
-                                        Log.w("InferenceScreen", "Streaming generation failed")
-                                        statusText = "❌ Generation failed. Check logcat for details (filter: LlamaNative)"
-                                    } else {
-                                        Log.w("InferenceScreen", "Generation timed out")
-                                        statusText = "⏱️ Generation timed out after 5 minutes.\n\nCheck logcat for details (filter: LlamaNative)"
+                                        outcome.timedOut ->
+                                            statusText = "⏱️ Generation timed out after 5 minutes.\n\nlogcat 확인 (filter: LlamaNative)"
+                                        else ->
+                                            statusText = "❌ Generation failed. logcat 확인 (filter: LlamaNative)"
                                     }
                                 } catch (e: Exception) {
                                     Log.e("InferenceScreen", "Error during generation", e)
-                                    statusText = "❌ Error: ${e.message}\n\nCheck logcat for details (filter: LlamaNative or InferenceScreen)"
+                                    statusText = "❌ Error: ${e.message}\n\nlogcat 확인 (filter: LlamaNative or InferenceScreen)"
                                 } finally {
-                                    Log.d("InferenceScreen", "Finally block: setting isGenerating = false")
                                     isGenerating = false
                                 }
                             }
@@ -366,20 +334,45 @@ fun InferenceScreen(
                     Icon(Icons.Default.Clear, contentDescription = "Clear")
                 }
             } // Row 블록 닫기
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // 자동 반복 실험: 프롬프트셋 × (warmup + 반복)을 한 번에 돌려 results.jsonl에 기록.
+                // 사람이 버튼을 여러 번 누를 필요가 없어짐 = 확장 가능한 측정의 진입점.
+                Button(
+                    onClick = {
+                        isGenerating = true
+                        generatedText = ""
+                        generationStats = null
+                        coroutineScope.launch {
+                            try {
+                                val saved = BenchmarkRunner.runSuite(
+                                    context = context,
+                                    engine = engine,
+                                    model = MODEL_NAME,
+                                    onProgress = { done, total, label ->
+                                        statusText = "🧪 Suite $done/$total ($label)"
+                                    }
+                                )
+                                statusText = "✅ Suite 완료! results.jsonl에 ${saved}건 저장됨"
+                            } catch (e: Exception) {
+                                Log.e("InferenceScreen", "Suite error", e)
+                                statusText = "❌ Suite 오류: ${e.message}"
+                            } finally {
+                                isGenerating = false
+                            }
+                        }
+                    },
+                    enabled = !isGenerating,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.tertiary
+                    )
+                ) {
+                    Text("🧪 Run Suite (${BenchmarkRunner.DEFAULT_PROMPTS.size} prompts × 5)")
+                }
         } // if (systemPromptDecoded) 블록 닫기
         } // else 블록 닫기
-        
-        Spacer(modifier = Modifier.height(16.dp))
-        
-        Button(
-            onClick = onBackClick,
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.secondaryContainer
-            )
-        ) {
-            Text("뒤로가기")
-        }
     }
 }
 
