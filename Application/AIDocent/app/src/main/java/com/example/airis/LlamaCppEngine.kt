@@ -5,6 +5,8 @@ package com.example.airis
 class LlamaCppEngine : InferenceEngine{
     // override = "계약서에 있던 함수를 내가 실제로 구현한다"는 표시(필수).
     // 몸통에서 하는 일은 딱 하나 — 기존 NativeBridge에게 그대로 떠넘기기
+    override val name = "llama.cpp"
+
     override fun loadModel(path: String): Boolean{
         return NativeBridge.loadModel(path)
     }
@@ -15,6 +17,10 @@ class LlamaCppEngine : InferenceEngine{
     
     override fun decodeSystemPrompt(): Boolean{
         return NativeBridge.decodeSystemPrompt()
+    }
+
+    override fun resetToSystemPrompt(): Boolean{
+        return NativeBridge.resetToSystemPrompt()
     }
 
     override fun generateStreaming(prompt: String, onToken:(String)-> Unit): Boolean{

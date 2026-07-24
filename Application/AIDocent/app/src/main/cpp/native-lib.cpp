@@ -228,6 +228,35 @@ Java_com_example_airis_NativeBridge_setArtworkInfo(JNIEnv* env, jobject /* this 
     LOGI("Artwork info set successfully");
 }
 
+// Reset KV cache back to the cached system prompt.
+// Removes every token at position [n_past_system, inf) so the next generateStreaming()
+// starts from a clean "system-prompt-only" state. The system prompt itself stays cached,
+// so no re-prefill is needed. This is what makes repeated benchmark runs independent:
+// without it, each generation appends to the previous turn and context grows every call.
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_com_example_airis_NativeBridge_resetToSystemPrompt(JNIEnv* env, jobject /* this */) {
+    if (!session_initialized || !ctx) {
+        LOGE("Session not initialized. Call initSession() first!");
+        return JNI_FALSE;
+    }
+    if (!system_prompt_cached) {
+        LOGE("System prompt not cached; nothing to reset to");
+        return JNI_FALSE;
+    }
+
+    llama_memory_t mem = llama_get_memory(ctx);
+    // seq_id=0, p0=n_past_system, p1=-1 → remove [n_past_system, inf)
+    bool ok = llama_memory_seq_rm(mem, 0, n_past_system, -1);
+    if (!ok) {
+        LOGE("Failed to remove KV entries after system prompt");
+        return JNI_FALSE;
+    }
+
+    LOGI("KV cache reset to system prompt (%d tokens kept)", n_past_system);
+    return JNI_TRUE;
+}
+
 // Clean up session: free sampler and context
 extern "C"
 JNIEXPORT void JNICALL

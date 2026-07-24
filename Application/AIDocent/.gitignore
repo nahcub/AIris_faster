@@ -13,3 +13,6 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# 벤치마크 산출물(데이터) — 코드 아님, adb pull로 회수하는 결과 파일
+/benchmark_results

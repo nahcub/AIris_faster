@@ -16,18 +16,20 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
+private const val MODEL_FILE_NAME = "qwen3_0_6b_mixed_int4.litertlm"
+// 벤치 기록용 모델 라벨은 파일명에서 파생 (확장자 무관하게 마지막 점 뒤 제거)
+private val MODEL_NAME = MODEL_FILE_NAME.substringBeforeLast('.')
+
 @Composable
-fun LlamaScreen(
-    onBackClick: () -> Unit = {},
+fun InferenceScreen(
     autoInitialize: Boolean = false
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var modelLoaded by remember { mutableStateOf(false) }
-    val engine = remember{EngineFactory.create(EngineType.LLAMA_CPP)}
+    val engine = remember { EngineFactory.create(EngineType.LITE_RT, context) }
     var sessionInitialized by remember { mutableStateOf(false) }
     var systemPromptDecoded by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("Ready to load model.") }
@@ -42,7 +44,7 @@ fun LlamaScreen(
         onDispose {
             if (sessionInitialized) {
                 engine.close()
-                Log.d("LlamaScreen", "Session closed on screen dispose")
+                Log.d("InferenceScreen", "Session closed on screen dispose")
             }
         }
     }
@@ -53,7 +55,7 @@ fun LlamaScreen(
             isAutoInitializing = true
             try {
                 val appFilesDir = context.getExternalFilesDir(null)
-                val modelFile = File(appFilesDir, "Qwen3-0.6B-IQ4_NL.gguf")
+                val modelFile = File(appFilesDir, MODEL_FILE_NAME)
                 val path = modelFile.absolutePath
                 
                 if (!modelFile.exists()) {
@@ -100,7 +102,7 @@ fun LlamaScreen(
                 }
             } catch (e: Exception) {
                 statusText = "Error: ${e.message}"
-                Log.e("LlamaScreen", "Auto initialization error", e)
+                Log.e("InferenceScreen", "Auto initialization error", e)
             } finally {
                 isAutoInitializing = false
             }
@@ -110,7 +112,8 @@ fun LlamaScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .systemBarsPadding()   // edge-to-edge에서 상태바·내비게이션바에 안 가리도록
+            .padding(12.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         // 상태 표시
@@ -149,15 +152,15 @@ fun LlamaScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = generationStats!!,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.secondary
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
         }
         
-        Spacer(modifier = Modifier.height(16.dp))
-        
+        Spacer(modifier = Modifier.height(8.dp))
+
         // 모델 로드 버튼들 (자동 초기화 중이면 숨김)
         if (!modelLoaded && !isAutoInitializing) {
             Button(
@@ -165,7 +168,7 @@ fun LlamaScreen(
                     coroutineScope.launch {
                         try {
                             val appFilesDir = context.getExternalFilesDir(null)
-                            val modelFile = File(appFilesDir, "Qwen3-0.6B-IQ4_NL.gguf")
+                            val modelFile = File(appFilesDir, MODEL_FILE_NAME)
                             val path = modelFile.absolutePath
                             
                             if (!modelFile.exists()) {
@@ -276,52 +279,39 @@ fun LlamaScreen(
                             statusText = "⚡ Generating response (fast mode)..."
                             generationStats = null
 
-                            // 코루틴을 사용하여 백그라운드 스레드에서 스트리밍 생성
+                            // 측정은 BenchmarkRunner.runOnce에 위임 (reset → generate → 지표).
+                            // UI는 토큰 스트리밍과 결과 표시만 담당.
                             coroutineScope.launch {
                                 try {
-                                    Log.d("LlamaScreen", "Starting streaming generation (session-based)...")
-                                    val startTime = System.currentTimeMillis()
-                                    var tokenCount = 0
+                                    val outcome = BenchmarkRunner.runOnce(
+                                        engine = engine,
+                                        prompt = userInput.trim(),
+                                        model = MODEL_NAME
+                                    ) { token ->
+                                        generatedText += token
+                                    }
 
-                                    val success = withTimeoutOrNull(300000) { // 5분 타임아웃
-                                        withContext(Dispatchers.Default) {
-                                            Log.d("LlamaScreen", "Calling engine.generateStreaming with session...")
-                                            engine.generateStreaming(userInput.trim()) { token ->
-                                                // 토큰이 생성될 때마다 UI 업데이트
-                                                Log.d("LlamaScreen", "Received token: $token")
-                                                generatedText += token
-                                                tokenCount++
+                                    val rec = outcome.record
+                                    when {
+                                        rec != null -> {
+                                            statusText = "✅ Response generated!"
+                                            generationStats = String.format(
+                                                "TTFT: %.2fs | Decode: %.1f tok/s | Total: %.2fs | Tokens: %d",
+                                                rec.ttftSec, rec.decodeTokPerSec, rec.totalSec, rec.tokenCount
+                                            )
+                                            withContext(Dispatchers.IO) {
+                                                BenchmarkLogger.append(context, rec)
                                             }
                                         }
-                                    }
-
-                                    val endTime = System.currentTimeMillis()
-                                    val elapsedSeconds = (endTime - startTime) / 1000.0
-                                    val tokensPerSecond = if (elapsedSeconds > 0) tokenCount / elapsedSeconds else 0.0
-
-                                    Log.d("LlamaScreen", "Streaming completed: ${success != null}")
-
-                                    if (success == true) {
-                                        Log.d("LlamaScreen", "Streaming generation successful")
-                                        statusText = "✅ Response generated!"
-                                        generationStats = String.format(
-                                            "⏱️ Total time: %.2fs | Tokens: %d | Speed: %.2f tokens/sec",
-                                            elapsedSeconds,
-                                            tokenCount,
-                                            tokensPerSecond
-                                        )
-                                    } else if (success == false) {
-                                        Log.w("LlamaScreen", "Streaming generation failed")
-                                        statusText = "❌ Generation failed. Check logcat for details (filter: LlamaNative)"
-                                    } else {
-                                        Log.w("LlamaScreen", "Generation timed out")
-                                        statusText = "⏱️ Generation timed out after 5 minutes.\n\nCheck logcat for details (filter: LlamaNative)"
+                                        outcome.timedOut ->
+                                            statusText = "⏱️ Generation timed out after 5 minutes.\n\nlogcat 확인 (filter: LlamaNative)"
+                                        else ->
+                                            statusText = "❌ Generation failed. logcat 확인 (filter: LlamaNative)"
                                     }
                                 } catch (e: Exception) {
-                                    Log.e("LlamaScreen", "Error during generation", e)
-                                    statusText = "❌ Error: ${e.message}\n\nCheck logcat for details (filter: LlamaNative or LlamaScreen)"
+                                    Log.e("InferenceScreen", "Error during generation", e)
+                                    statusText = "❌ Error: ${e.message}\n\nlogcat 확인 (filter: LlamaNative or InferenceScreen)"
                                 } finally {
-                                    Log.d("LlamaScreen", "Finally block: setting isGenerating = false")
                                     isGenerating = false
                                 }
                             }
@@ -344,20 +334,45 @@ fun LlamaScreen(
                     Icon(Icons.Default.Clear, contentDescription = "Clear")
                 }
             } // Row 블록 닫기
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // 자동 반복 실험: 프롬프트셋 × (warmup + 반복)을 한 번에 돌려 results.jsonl에 기록.
+                // 사람이 버튼을 여러 번 누를 필요가 없어짐 = 확장 가능한 측정의 진입점.
+                Button(
+                    onClick = {
+                        isGenerating = true
+                        generatedText = ""
+                        generationStats = null
+                        coroutineScope.launch {
+                            try {
+                                val saved = BenchmarkRunner.runSuite(
+                                    context = context,
+                                    engine = engine,
+                                    model = MODEL_NAME,
+                                    onProgress = { done, total, label ->
+                                        statusText = "🧪 Suite $done/$total ($label)"
+                                    }
+                                )
+                                statusText = "✅ Suite 완료! results.jsonl에 ${saved}건 저장됨"
+                            } catch (e: Exception) {
+                                Log.e("InferenceScreen", "Suite error", e)
+                                statusText = "❌ Suite 오류: ${e.message}"
+                            } finally {
+                                isGenerating = false
+                            }
+                        }
+                    },
+                    enabled = !isGenerating,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.tertiary
+                    )
+                ) {
+                    Text("🧪 Run Suite (${BenchmarkRunner.DEFAULT_PROMPTS.size} prompts × 5)")
+                }
         } // if (systemPromptDecoded) 블록 닫기
         } // else 블록 닫기
-        
-        Spacer(modifier = Modifier.height(16.dp))
-        
-        Button(
-            onClick = onBackClick,
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.secondaryContainer
-            )
-        ) {
-            Text("뒤로가기")
-        }
     }
 }
 
