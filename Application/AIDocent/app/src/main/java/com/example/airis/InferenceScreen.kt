@@ -18,9 +18,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-private const val MODEL_FILE_NAME = "Qwen3-0.6B-IQ4_NL.gguf"
-// 벤치 기록용 모델 라벨은 파일명에서 파생 (확장자만 제거)
-private val MODEL_NAME = MODEL_FILE_NAME.removeSuffix(".gguf")
+private const val MODEL_FILE_NAME = "qwen3_0_6b_mixed_int4.litertlm"
+// 벤치 기록용 모델 라벨은 파일명에서 파생 (확장자 무관하게 마지막 점 뒤 제거)
+private val MODEL_NAME = MODEL_FILE_NAME.substringBeforeLast('.')
 
 @Composable
 fun InferenceScreen(
@@ -29,7 +29,7 @@ fun InferenceScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var modelLoaded by remember { mutableStateOf(false) }
-    val engine = remember{EngineFactory.create(EngineType.LLAMA_CPP)}
+    val engine = remember { EngineFactory.create(EngineType.LITE_RT, context) }
     var sessionInitialized by remember { mutableStateOf(false) }
     var systemPromptDecoded by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("Ready to load model.") }
@@ -55,7 +55,7 @@ fun InferenceScreen(
             isAutoInitializing = true
             try {
                 val appFilesDir = context.getExternalFilesDir(null)
-                val modelFile = File(appFilesDir, "Qwen3-0.6B-IQ4_NL.gguf")
+                val modelFile = File(appFilesDir, MODEL_FILE_NAME)
                 val path = modelFile.absolutePath
                 
                 if (!modelFile.exists()) {
@@ -168,7 +168,7 @@ fun InferenceScreen(
                     coroutineScope.launch {
                         try {
                             val appFilesDir = context.getExternalFilesDir(null)
-                            val modelFile = File(appFilesDir, "Qwen3-0.6B-IQ4_NL.gguf")
+                            val modelFile = File(appFilesDir, MODEL_FILE_NAME)
                             val path = modelFile.absolutePath
                             
                             if (!modelFile.exists()) {
