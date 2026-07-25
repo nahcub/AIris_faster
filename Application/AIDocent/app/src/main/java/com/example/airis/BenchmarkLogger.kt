@@ -21,6 +21,10 @@ data class BenchmarkRecord(
     val lora: String? = null,
     val ragVariant: String? = null,
     val memPeakMb: Double? = null,
+    val nativeHeapMb: Double? = null,
+    val tempStartC: Double? = null,
+    val tempEndC: Double? = null,
+    val thermalStatus: String? = null,
     val runId: String = UUID.randomUUID().toString().take(8),
     val timestamp: String = Instant.now().toString()
 ) {
@@ -38,6 +42,10 @@ data class BenchmarkRecord(
         put("lora", lora ?: JSONObject.NULL)
         put("rag_variant", ragVariant ?: JSONObject.NULL)
         put("mem_peak", memPeakMb ?: JSONObject.NULL)
+        put("native_heap_mb", nativeHeapMb ?: JSONObject.NULL)
+        put("temp_start_c", tempStartC ?: JSONObject.NULL)
+        put("temp_end_c", tempEndC ?: JSONObject.NULL)
+        put("thermal_status", thermalStatus ?: JSONObject.NULL)
     }
 }
 
