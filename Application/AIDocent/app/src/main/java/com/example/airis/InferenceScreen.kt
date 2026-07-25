@@ -284,6 +284,7 @@ fun InferenceScreen(
                             coroutineScope.launch {
                                 try {
                                     val outcome = BenchmarkRunner.runOnce(
+                                        context = context,
                                         engine = engine,
                                         prompt = userInput.trim(),
                                         model = MODEL_NAME

@@ -34,12 +34,16 @@ object BenchmarkRunner {
     // 맨 앞의 resetToSystemPrompt()가 매 호출을 '시스템 프롬프트만 있는 깨끗한 상태'로 되돌려
     // 회차 간 독립(= 통제된 실험 조건)을 보장한다. 시스템 프롬프트 캐시는 유지되므로 재프리필은 없다.
     suspend fun runOnce(
+        context: Context,
         engine: InferenceEngine,
         prompt: String,
         model: String,
         onToken: (String) -> Unit = {}
     ): BenchmarkOutcome = withContext(Dispatchers.Default) {
         engine.resetToSystemPrompt()
+
+        // 생성 시작 직전 온도 스냅샷(발열 delta의 기준점)
+        val tempStart = HardwareStats.batteryTempC(context)
 
         val startTime = System.currentTimeMillis()
         var tokenCount = 0
@@ -62,6 +66,12 @@ object BenchmarkRunner {
         // 첫 토큰은 TTFT에 포함되므로 순수 decode 구간엔 나머지(tokenCount-1)개만 계산
         val decodeTokPerSec = if (decodeSec > 0) (tokenCount - 1).coerceAtLeast(0) / decodeSec else 0.0
 
+        // 생성 종료 후 자원 스냅샷: RAM(peak/native heap) + 발열(온도/스로틀링 단계)
+        val peakRss = HardwareStats.peakRssMb()
+        val nativeHeap = HardwareStats.nativeHeapMb()
+        val tempEnd = HardwareStats.batteryTempC(context)
+        val thermal = HardwareStats.thermalStatus(context)
+
         val record = if (success == true) BenchmarkRecord(
             engine = engine.name,
             model = model,
@@ -69,7 +79,12 @@ object BenchmarkRunner {
             ttftSec = ttftSec,
             decodeTokPerSec = decodeTokPerSec,
             totalSec = totalSec,
-            tokenCount = tokenCount
+            tokenCount = tokenCount,
+            memPeakMb = peakRss,
+            nativeHeapMb = nativeHeap,
+            tempStartC = tempStart,
+            tempEndC = tempEnd,
+            thermalStatus = thermal
         ) else null
 
         BenchmarkOutcome(
@@ -88,7 +103,7 @@ object BenchmarkRunner {
         engine: InferenceEngine,
         model: String,
         prompts: List<String> = DEFAULT_PROMPTS,
-        repeats: Int = 5,
+        repeats: Int = 2,
         warmups: Int = 1,
         onProgress: (done: Int, total: Int, label: String) -> Unit = { _, _, _ -> }
     ): Int = withContext(Dispatchers.Default) {
@@ -99,13 +114,13 @@ object BenchmarkRunner {
         for (prompt in prompts) {
             // 예열: 결과를 버린다
             repeat(warmups) {
-                runOnce(engine, prompt, model)
+                runOnce(context, engine, prompt, model)
                 done++
                 onProgress(done, total, "warmup")
             }
             // 본 측정: 기록한다
             repeat(repeats) { i ->
-                val outcome = runOnce(engine, prompt, model)
+                val outcome = runOnce(context, engine, prompt, model)
                 outcome.record?.let { rec ->
                     withContext(Dispatchers.IO) { BenchmarkLogger.append(context, rec) }
                     saved++

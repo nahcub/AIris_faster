@@ -19,7 +19,9 @@
 - `LiteRtEngine.kt` — `InferenceEngine` 구현체(어댑터). **LiteRT-LM 런타임(`com.google.ai.edge.litertlm`)을 감싸는 층**. JNI 없이 순수 Kotlin(라이브러리가 이미 컴파일된 AAR). `Engine`(모델) + `Conversation`(세션) 구조. 시스템 프롬프트는 `ConversationConfig.systemInstruction`으로 주입, `resetToSystemPrompt`는 대화를 새로 열어 구현(LiteRT-LM엔 명시적 reset 없음), `sendMessageAsync`+`CountDownLatch`로 async 스트리밍을 blocking 계약에 맞춤, 토큰 텍스트는 `Message→Contents→Content.Text.text` 체인으로 추출. `Context` 필요(cacheDir). `name`으로 `"litert-lm"` 보고
 - `EngineFactory.kt` — `EngineType`(`LLAMA_CPP` / `LITE_RT`) 보고 엔진 생성. `LiteRtEngine`이 `Context`를 요구해 `create(type, context)` 시그니처. 엔진 교체는 `InferenceScreen`의 `EngineFactory.create(...)` 인자 한 줄
 - `NativeBridge.kt` — JNI 브릿지 (`external fun` 선언들). 이제 `LlamaCppEngine` 뒤의 내부 부품
-- `BenchmarkLogger.kt` — 벤치 결과 1건 = `BenchmarkRecord`(data class, PLAN Phase 0 스키마: `run_id/timestamp/engine/model/prompt/ttft/tok_s/latency/...` + `backend/lora/rag/mem`은 나중 Phase용 null). 기기의 `getExternalFilesDir(null)/benchmarks/results.jsonl`에 **JSONL(한 줄=한 레코드)**로 append. `org.json.JSONObject`로 escape 안전 처리. `adb pull`로 컴퓨터 회수
+- `BenchmarkLogger.kt` — 벤치 결과 1건 = `BenchmarkRecord`(data class, PLAN Phase 0 스키마: `run_id/timestamp/engine/model/prompt/ttft/tok_s/latency/token_count` + **자원 지표** `mem_peak/native_heap_mb/temp_start_c/temp_end_c/thermal_status`(실측), `backend/lora/rag`은 나중 Phase용 null). 기기의 `getExternalFilesDir(null)/benchmarks/results.jsonl`에 **JSONL(한 줄=한 레코드)**로 append. `org.json.JSONObject`로 escape 안전 처리. `adb pull`로 컴퓨터 회수
+- `HardwareStats.kt` — 회차마다 찍는 **OS 자원 지표(RAM·발열) 읽기 헬퍼**(`object`). 엔진 무관 프로세스/기기 지표라 측정 계층(`BenchmarkRunner`)에서만 씀. `peakRssMb`(`/proc/self/status`의 `VmHWM` 파싱, 프로세스 누적 peak RSS), `nativeHeapMb`(`Debug.getNativeHeapAllocatedSize`, llama.cpp/모델 C++ 몫), `batteryTempC`(sticky `ACTION_BATTERY_CHANGED`의 `EXTRA_TEMPERATURE`), `thermalStatus`(`PowerManager.currentThermalStatus`, 스로틀링 단계). 어떤 read든 실패하면 null 반환(측정이 벤치를 안 깨게). **전력은 외부 계측 없이는 근사라 제외, CPU/SoC sysfs 온도는 앱 SELinux로 막혀 배제** — 배터리 온도+thermal status만 실측
+- `BenchmarkRunner.kt` — 측정 실행 계층. `runOnce`(reset→생성→지표 계산 1사이클, 단발/Suite 공유 단위) + `runSuite`(고정 프롬프트셋 × [warmup 폐기 + repeats 기록]). `runOnce`가 `Context`를 받아 생성 **직전 온도** / **직후 RAM·온도·thermal**을 `HardwareStats`로 스냅샷해 레코드에 기입. 기본값 `warmups=1`(콜드스타트 버림) + `repeats=2`(장치 제작 단계라 축소, 정식 측정 땐 5+로)
 
 > **왜 이렇게 나눴나**: llama.cpp ↔ LiteRT를 갈아끼울 때 UI(`InferenceScreen`)를 안 건드리려고 추상화. **LiteRT-LM 엔진(`LiteRtEngine`)이 이 추상화 위에서 실제로 추가됨** — `InferenceEngine` 구현 + `EngineFactory` 케이스 한 줄, `InferenceScreen`은 엔진 선택 인자 외엔 안 건드림(엔진이 `name`을 보고하므로 벤치 라벨도 자동으로 따라옴). `.task`(MediaPipe tasks-genai)가 아니라 **`.litertlm`(LiteRT-LM)**을 고른 이유: MediaPipe LLM API는 유지보수 전용으로 동결됐고, Qwen3-0.6B가 `.litertlm`으로만 배포돼 llama.cpp의 GGUF와 같은 모델로 공정 비교가 가능하기 때문. 배경/개념 정리는 `docs/notes/2026-07-18-inference-engine-abstraction.md`.
 
@@ -62,7 +64,13 @@
 
 > ⚠️ app레벨 `tokenCount`는 화면에 flush된 조각 수(UTF-8 버퍼링 영향)라 정확한 모델 토큰 수와 다를 수 있음 → **"체감값(perceived)"**으로 취급. 정확한 모델 토큰 기준 decode는 엔진레벨(`n_cur`)/`llama-bench`가 ground truth. 리포트엔 둘을 구분해서 쓸 것.
 
-아직 없음: 엔진레벨 순수 decode 분리, 메모리/발열/전력, 품질(perplexity·groundedness 등), **반복 측정 방법론**(고정 프롬프트셋 + warmup 버리기 + N회 반복 → 중앙값/p90). 지금은 손으로 1회 측정하는 v0 단계.
+**자원레벨 (`HardwareStats.kt` → `BenchmarkRunner`가 기록, JSONL 저장)** — 인앱 API로 회차마다 읽어 같은 레코드에 통합. 엔진 무관 OS 지표:
+- **RAM**: `mem_peak`(VmHWM 프로세스 누적 peak RSS, MB) + `native_heap_mb`(네이티브 힙 = 모델/런타임 C++ 몫). 엔진별 메모리 효율 비교의 재료
+- **발열**: `temp_start_c`/`temp_end_c`(배터리 온도, 생성 전/후) + `thermal_status`(스로틀링 단계 `NONE~SHUTDOWN`)
+
+> ⚠️ 자원레벨 주의: `mem_peak`(VmHWM)은 프로세스 누적 peak라 회차 간 값이 같게 나옴(모델이 메모리 대부분 차지, 정상). 배터리 온도는 반응이 느려 짧은 생성(수 초)엔 전=후로 안 움직임 — **발열 곡선은 긴 부하(연속 Suite/긴 생성)에서만** 관측됨. CPU/SoC 코어 온도까지 원하면 외부 adb 샘플러 별도.
+
+아직 없음: 엔진레벨 순수 decode 분리, **전력**(외부 계측 필요), 품질(perplexity·groundedness·accuracy/F1·LLM-judge 등), **통계 방법론**(N회↑ → 중앙값/p90). 지금은 자원(RAM·발열)까지 자동 기록되지만 반복 수가 적은 v0 단계.
 
 ## 빌드 / 실행
 
