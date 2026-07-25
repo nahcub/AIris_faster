@@ -29,7 +29,9 @@ class LiteRtEngine(private val context: Context) : InferenceEngine {
         return try {
             val config = EngineConfig(
                 modelPath = path,
-                backend = Backend.CPU(),            // arm64 CPU. 나중에 Backend.GPU()로 실험 가능
+                backend = Backend.CPU(),            // arm64 CPU. ⚠️ Backend.GPU()는 이 기기(SM-S931N)에서
+                                                    // 생성 시 "Can not find OpenCL library" 예외로 실패함
+                                                    // (LiteRT-LM 0.14.0 GPU 경로가 OpenCL 요구, 기기 미노출).
                 cacheDir = context.cacheDir.path    // 로드 시간 단축용 캐시
             )
             engine = Engine(config).apply { initialize() }  // ⚠️ 최대 10초 걸림 → 백그라운드에서 호출
@@ -77,6 +79,7 @@ class LiteRtEngine(private val context: Context) : InferenceEngine {
                 latch.countDown()
             }
             override fun onError(throwable: Throwable) {
+                android.util.Log.e("LiteRtEngine", "generateStreaming onError", throwable)
                 ok = false
                 latch.countDown()
             }
