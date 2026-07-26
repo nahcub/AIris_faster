@@ -21,22 +21,40 @@ class LiteRtEngine(private val context: Context) : InferenceEngine {
 
     override val name = "litert-lm"   // ← 벤치 results.jsonl의 engine 라벨
 
+    // 실제로 로드에 성공한 백엔드를 담는다("gpu"/"cpu"). loadModel에서 확정.
+    // 로드 전엔 "unknown" — 아직 어느 백엔드로 돌지 정해지지 않음.
+    private var resolvedBackend: String = "unknown"
+    override val backend: String get() = resolvedBackend
+
     private var engine: Engine? = null            // 모델 런타임 (loadModel에서 생성)
     private var conversation: Conversation? = null // 대화 = 세션 (initSession/decode/reset에서 생성)
     private var systemPrompt: String = ""          // 대화 생성 시 주입할 시스템 프롬프트
+    private var artwork: Artwork = Artwork()        // 시스템 프롬프트에 넣을 작품 정보(setArtwork로 주입)
 
+    // 먼저 GPU로 로드 시도, 실패하면 CPU로 폴백.
+    // ⚠️ GPU 경로는 매니페스트에 libOpenCL.so/libvndksupport.so 선언 + 기기가 OpenCL 노출 시에만 성공.
+    //    (Galaxy S25/Adreno는 성공, Tensor G3·일부 중저가칩은 미노출 → 여기서 CPU로 자동 강등)
+    //    resolvedBackend에 '실제로 성공한' 백엔드가 박혀 벤치 라벨이 진실이 된다.
     override fun loadModel(path: String): Boolean {
+        if (tryLoad(path, Backend.GPU(), "gpu")) return true
+        if (tryLoad(path, Backend.CPU(), "cpu")) return true
+        return false
+    }
+
+    // 주어진 백엔드로 엔진 생성 시도. 성공하면 resolvedBackend를 확정하고 true.
+    private fun tryLoad(path: String, backendImpl: Backend, label: String): Boolean {
         return try {
             val config = EngineConfig(
                 modelPath = path,
-                backend = Backend.CPU(),            // arm64 CPU. ⚠️ Backend.GPU()는 이 기기(SM-S931N)에서
-                                                    // 생성 시 "Can not find OpenCL library" 예외로 실패함
-                                                    // (LiteRT-LM 0.14.0 GPU 경로가 OpenCL 요구, 기기 미노출).
+                backend = backendImpl,
                 cacheDir = context.cacheDir.path    // 로드 시간 단축용 캐시
             )
             engine = Engine(config).apply { initialize() }  // ⚠️ 최대 10초 걸림 → 백그라운드에서 호출
+            resolvedBackend = label
+            android.util.Log.i("LiteRtEngine", "loaded with backend=$label")
             true
         } catch (e: Exception) {
+            android.util.Log.w("LiteRtEngine", "backend=$label load failed, trying next", e)
             engine = null
             false
         }
@@ -47,6 +65,11 @@ class LiteRtEngine(private val context: Context) : InferenceEngine {
         // decodeSystemPrompt에서 시스템 프롬프트를 넣어 다시 만든다.
         conversation = openConversation()
         return conversation != null
+    }
+
+    // 작품 정보 저장 → 다음 decodeSystemPrompt()의 buildSystemPrompt()가 이 값으로 본문을 만든다.
+    override fun setArtwork(artwork: Artwork) {
+        this.artwork = artwork
     }
 
     override fun decodeSystemPrompt(): Boolean {
@@ -109,9 +132,27 @@ class LiteRtEngine(private val context: Context) : InferenceEngine {
         return e.createConversation(config)
     }
 
-    // TODO: 지금은 배선 검증이라 빈 문자열. 나중에 prompt_generate.cpp가 만들던 도슨트
-    //       시스템 프롬프트를 Kotlin에서 art_metadata.json 읽어 재현하면 됨.
-    private fun buildSystemPrompt(): String = ""
+    // llama.cpp 엔진과 '동등한' 시스템 프롬프트를 만든다.
+    // ⚠️ 중요: llama.cpp의 buildSystemPrompt()는 <|im_start|>system … <|im_end|> Qwen 채팅
+    //    템플릿 태그를 '직접' 붙인다. 하지만 LiteRT-LM은 systemInstruction에 넣은 텍스트를
+    //    런타임이 알아서 모델 채팅 템플릿으로 감싼다. 그래서 여기선 태그를 빼고
+    //    prompt_generate.cpp의 formatArtworkInfo() '본문만' 그대로 재현해야 이중 래핑이 안 되고
+    //    두 엔진이 논리적으로 같은 system 메시지를 보게 된다.
+    // setArtwork로 주입된 작품(없으면 빈 Artwork)을 본문으로 만든다 — llama.cpp와 동일한 소스.
+    private fun buildSystemPrompt(): String = formatArtworkInfo(artwork)
+
+    // prompt_generate.cpp의 formatArtworkInfo()를 Kotlin으로 1:1 미러링.
+    // 비어 있지 않은 필드만 라벨과 함께 출력하는 순서·형식까지 동일하게 맞춤.
+    private fun formatArtworkInfo(a: Artwork): String = buildString {
+        append("[ARTWORK INFO]\n\n")
+        if (a.title.isNotEmpty())       append("Title: ${a.title}\n")
+        if (a.date.isNotEmpty())        append("Object Date: ${a.date}\n")
+        if (a.author.isNotEmpty())      append("Artist Display Name: ${a.author}\n")
+        if (a.technique.isNotEmpty())   append("Medium: ${a.technique}\n")
+        if (a.type.isNotEmpty())        append("Type: ${a.type}\n")
+        if (a.description.isNotEmpty()) append("Description: ${a.description}\n")
+        append("\n")
+    }
 
     // 스트리밍으로 온 Message에서 텍스트만 뽑는다.
     // Message → Contents(여러 Content) → 그중 Content.Text의 문자열들을 이어 붙임.
