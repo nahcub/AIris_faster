@@ -80,6 +80,8 @@ object BenchmarkRunner {
             decodeTokPerSec = decodeTokPerSec,
             totalSec = totalSec,
             tokenCount = tokenCount,
+            backend = engine.backend,   // 실제 실행된 백엔드("gpu"/"cpu")를 기록
+
             memPeakMb = peakRss,
             nativeHeapMb = nativeHeap,
             tempStartC = tempStart,

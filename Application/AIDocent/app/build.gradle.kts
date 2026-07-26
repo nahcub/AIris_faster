@@ -27,7 +27,16 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"
-                arguments += listOf("-DANDROID_STL=c++_shared")
+                arguments += listOf(
+                    "-DANDROID_STL=c++_shared",
+                    // 벤치 공정성: debug 앱이어도 네이티브(llama.cpp)는 -O3 release로 빌드.
+                    // 없으면 -O0으로 컴파일돼 llama.cpp가 ~3 tok/s로 측정됨 (LiteRT-LM은
+                    // 미리 컴파일된 AAR라 영향 없음 → 불공정 비교가 됨).
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    // int4 행렬곱 가속(sdot). armv8.2+ 기기 전제. i8mm은 미지원 기기에서
+                    // SIGILL 위험이 있어 제외.
+                    "-DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16"
+                )
             }
         }
     }

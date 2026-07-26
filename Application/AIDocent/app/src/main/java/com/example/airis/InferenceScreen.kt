@@ -30,6 +30,8 @@ fun InferenceScreen(
     val coroutineScope = rememberCoroutineScope()
     var modelLoaded by remember { mutableStateOf(false) }
     val engine = remember { EngineFactory.create(EngineType.LITE_RT, context) }
+    // 그림 인식 이음새. 지금은 고정 작품 하나를 반환하는 stub — 나중에 실제 인식 구현체로 교체.
+    val artworkRecognizer = remember { FixedArtworkRecognizer() }
     var sessionInitialized by remember { mutableStateOf(false) }
     var systemPromptDecoded by remember { mutableStateOf(false) }
     var statusText by remember { mutableStateOf("Ready to load model.") }
@@ -82,6 +84,9 @@ fun InferenceScreen(
                     if (sessionInit) {
                         sessionInitialized = true
                         statusText = "✅ Session initialized!\n\nDecoding system prompt..."
+
+                        // 인식된(지금은 고정) 작품을 엔진에 주입 → decode가 이 값으로 시스템 프롬프트 프리필
+                        engine.setArtwork(artworkRecognizer.recognize())
 
                         // 시스템 프롬프트 디코딩
                         val decoded = withContext(Dispatchers.Default) {
@@ -218,6 +223,7 @@ fun InferenceScreen(
                         coroutineScope.launch {
                             try {
                                 statusText = "Decoding system prompt (artwork info)..."
+                                engine.setArtwork(artworkRecognizer.recognize())
                                 val decoded = withContext(Dispatchers.Default) {
                                     engine.decodeSystemPrompt()
                                 }
