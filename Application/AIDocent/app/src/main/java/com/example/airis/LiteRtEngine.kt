@@ -11,13 +11,21 @@ import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.ExperimentalApi
+import com.google.ai.edge.litertlm.ExperimentalFlags
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.MessageCallback
 import com.google.ai.edge.litertlm.SamplerConfig
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 // LiteRT-LM은 cacheDir 등에 Context가 필요해 생성자로 받는다 (llama.cpp 엔진엔 없던 것)
 class LiteRtEngine(private val context: Context) : InferenceEngine {
+
+    private companion object {
+        // 생성 완료 콜백을 기다리는 최대 시간. 상위 BenchmarkRunner의 타임아웃(5분)과 맞춤.
+        const val GEN_WAIT_SEC = 300L
+    }
 
     override val name = "litert-lm"   // ← 벤치 results.jsonl의 engine 라벨
 
@@ -35,7 +43,15 @@ class LiteRtEngine(private val context: Context) : InferenceEngine {
     // ⚠️ GPU 경로는 매니페스트에 libOpenCL.so/libvndksupport.so 선언 + 기기가 OpenCL 노출 시에만 성공.
     //    (Galaxy S25/Adreno는 성공, Tensor G3·일부 중저가칩은 미노출 → 여기서 CPU로 자동 강등)
     //    resolvedBackend에 '실제로 성공한' 백엔드가 박혀 벤치 라벨이 진실이 된다.
+    @OptIn(ExperimentalApi::class)
     override fun loadModel(path: String): Boolean {
+        // ★ 엔진레벨 계측(getBenchmarkInfo) 스위치를 켠다.
+        //    ExperimentalFlags는 EngineConfig가 아니라 '앱 전역 싱글톤'이고,
+        //    Engine.initialize()가 이 값을 딱 한 번 읽어 네이티브에 넘긴다
+        //    → 반드시 엔진 생성 '전'에 켜야 한다. 안 켜고 만든 엔진에
+        //    getBenchmarkInfo()를 부르면 "INTERNAL: Benchmark is not enabled"로 던진다.
+        ExperimentalFlags.enableBenchmark = true
+
         if (tryLoad(path, Backend.GPU(), "gpu")) return true
         if (tryLoad(path, Backend.CPU(), "cpu")) return true
         return false
@@ -88,27 +104,81 @@ class LiteRtEngine(private val context: Context) : InferenceEngine {
         return conversation != null
     }
 
-    override fun generateStreaming(prompt: String, onToken: (String) -> Unit): Boolean {
+    override fun generateStreaming(prompt: String, maxTokens: Int, onToken: (String) -> Unit): Boolean {
         val conv = conversation ?: return false
 
         // ★ async를 blocking으로: onDone 콜백이 올 때까지 latch로 막는다 (기존 계약 유지)
         val latch = CountDownLatch(1)
         var ok = true
+        var emitted = 0        // 콜백 도착 횟수 (≠ 모델 토큰 수 — 아래 주석 참고)
+        var capped = false     // 상한 도달로 이미 끊었는지
+
         conv.sendMessageAsync(prompt, object : MessageCallback {
             override fun onMessage(message: Message) {
+                if (capped) return  // 취소 요청 후 늦게 도착한 조각은 버린다(길이 통제 유지)
                 onToken(message.textString())  // Message → Contents → Content.Text.text 체인으로 추출
+                emitted++
+                // LiteRT-LM에는 llama.cpp의 n_max_gen 같은 생성 상한 설정이 없다
+                // (ConversationConfig/SamplerConfig 어디에도 없음 — javap로 확인).
+                // 그래서 스트림을 직접 끊어서 길이를 통제한다.
+                if (emitted >= maxTokens) {
+                    capped = true
+                    conv.cancelProcess()
+                }
             }
             override fun onDone() {
                 latch.countDown()
             }
             override fun onError(throwable: Throwable) {
+                // ⚠️ cancelProcess()로 끊으면 LiteRT-LM은 onDone이 아니라
+                //    onError(CancellationException)로 답한다. 그건 '실패'가 아니라
+                //    우리가 의도한 길이 통제의 정상 종료다.
+                //    이걸 실패로 세면 runOnce가 레코드를 버려서, 상한에 안 걸린
+                //    '짧은 답변만' results.jsonl에 남는 조용한 편향이 생긴다.
+                if (capped) {
+                    android.util.Log.d("LiteRtEngine", "generation capped at $maxTokens (cancel ack)")
+                    latch.countDown()
+                    return
+                }
                 android.util.Log.e("LiteRtEngine", "generateStreaming onError", throwable)
                 ok = false
                 latch.countDown()
             }
         })
-        latch.await()
+
+        // cancelProcess() 뒤에도 onDone/onError가 반드시 온다는 보장이 없어 무한 대기를 피한다.
+        // (무한 await면 Dispatchers 스레드 하나가 영영 묶인다 — 상위 withTimeoutOrNull은
+        //  blocking await를 끊지 못하므로 여기서 직접 막아야 한다)
+        if (!latch.await(GEN_WAIT_SEC, TimeUnit.SECONDS)) {
+            android.util.Log.w("LiteRtEngine", "onDone/onError not received within ${GEN_WAIT_SEC}s")
+            ok = false
+        }
         return ok
+    }
+
+    // LiteRT-LM은 런타임이 직접 계측을 제공한다(Conversation.getBenchmarkInfo).
+    // 덕분에 콜백 조각 수가 아니라 '실제 모델 토큰 수'와 prefill/decode 분리 속도를 그대로 얻는다.
+    // ⚠️ 대화가 살아 있을 때만 유효 — resetToSystemPrompt()가 close/open 하면 값이 초기화된다.
+    // ⚠️ getBenchmarkInfo()는 @ExperimentalApi — 라이브러리 업그레이드 시 사라지거나 바뀔 수 있다.
+    //    깨지면 여기 한 곳만 고치면 되도록 lastStats() 안에 가둬 둔다.
+    @OptIn(ExperimentalApi::class)
+    override fun lastStats(): EngineStats? {
+        // 계측은 '있으면 좋은 것'이지 벤치의 전제조건이 아니다.
+        // (플래그가 꺼졌거나 API가 바뀌어) 실패하면 예외를 위로 던지지 말고 null로 떨어뜨려,
+        // app레벨 지표(TTFT·체감 tok/s)만으로 측정이 계속되게 한다. 반환 타입의 `?`와도 일관.
+        val info = try {
+            conversation?.getBenchmarkInfo() ?: return null
+        } catch (e: Exception) {
+            android.util.Log.w("LiteRtEngine", "getBenchmarkInfo failed (benchmark disabled?)", e)
+            return null
+        }
+        return EngineStats(
+            prefillTokens = info.lastPrefillTokenCount,
+            decodeTokens = info.lastDecodeTokenCount,
+            prefillTokPerSec = info.lastPrefillTokensPerSecond,
+            decodeTokPerSec = info.lastDecodeTokensPerSecond,
+            ttftSec = info.timeToFirstTokenInSecond
+        )
     }
 
     override fun close() {
@@ -123,10 +193,14 @@ class LiteRtEngine(private val context: Context) : InferenceEngine {
         val e = engine ?: return null
         val config = ConversationConfig(
             systemInstruction = if (systemPrompt.isNotEmpty()) Contents.of(systemPrompt) else null,
+            // 벤치 공정성: greedy(argmax)로 고정 — topK=1이면 topP/temperature/seed는 무의미해진다.
+            // 이전엔 topK=40/topP=0.8/temp=0.4로 llama.cpp와 '파라미터'는 맞췄지만,
+            // SamplerConfig의 seed 기본값이 고정이라 LiteRT만 재현되고 llama.cpp는 매번 달라졌다.
+            // greedy로 가면 시드 정책 차이 자체가 사라진다. (native-lib.cpp의 init_greedy와 짝)
             samplerConfig = SamplerConfig(
-                topK = 40,
-                topP = 0.8,          // LiteRT-LM은 Double (llama.cpp 설정과 의미 맞춤)
-                temperature = 0.4
+                topK = 1,
+                topP = 1.0,          // LiteRT-LM은 Double
+                temperature = 1.0
             )
         )
         return e.createConversation(config)

@@ -18,6 +18,18 @@ data class BenchmarkRecord(
     val totalSec: Double,
     val tokenCount: Int,
     val backend: String? = null,
+
+    // 측정 조건: 회차마다 같은 상한을 써야 tok_s 비교가 성립한다(레코드에 남겨 사후 검증 가능하게).
+    val maxTokens: Int? = null,
+
+    // 엔진레벨 계측(EngineStats). 위의 ttft/tok_s/token_count가 app레벨 '체감값'인 반면 이쪽이 ground truth.
+    // 엔진이 계측을 제공하지 않으면 null.
+    val promptTokens: Int? = null,
+    val decodeTokens: Int? = null,
+    val prefillTokPerSec: Double? = null,
+    val engineTokPerSec: Double? = null,
+    val engineTtftSec: Double? = null,
+
     val lora: String? = null,
     val ragVariant: String? = null,
     val memPeakMb: Double? = null,
@@ -39,6 +51,13 @@ data class BenchmarkRecord(
         put("latency", totalSec)
         put("token_count", tokenCount)
         put("backend", backend ?: JSONObject.NULL)
+        put("max_tokens", maxTokens ?: JSONObject.NULL)
+        // 엔진레벨(ground truth) — app레벨 ttft/tok_s/token_count와 나란히 두고 교차검증한다
+        put("prompt_tokens", promptTokens ?: JSONObject.NULL)
+        put("decode_tokens", decodeTokens ?: JSONObject.NULL)
+        put("prefill_tok_s", prefillTokPerSec ?: JSONObject.NULL)
+        put("engine_tok_s", engineTokPerSec ?: JSONObject.NULL)
+        put("engine_ttft", engineTtftSec ?: JSONObject.NULL)
         put("lora", lora ?: JSONObject.NULL)
         put("rag_variant", ragVariant ?: JSONObject.NULL)
         put("mem_peak", memPeakMb ?: JSONObject.NULL)
