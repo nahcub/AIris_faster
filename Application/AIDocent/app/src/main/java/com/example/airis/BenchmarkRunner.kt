@@ -28,6 +28,12 @@ object BenchmarkRunner {
         "Why did the artist use this technique?"
     )
 
+    // 배치 기본값. 장치 제작 단계라 축소해 둔 값이고, 정식 측정 땐 repeats를 5+로 올린다.
+    // 상수로 뽑아둔 이유: 자동화(AutoRunRequest)가 "지정 안 하면 기본값"을 표현하려면 이름이 필요하고,
+    // Suite 버튼 라벨도 이 값을 따라가야 실제 회차 수와 표시가 어긋나지 않는다.
+    const val DEFAULT_REPEATS = 2
+    const val DEFAULT_WARMUPS = 1
+
     private const val GEN_TIMEOUT_MS = 300_000L // 5분
 
     // 측정 1회 = reset → generateStreaming → TTFT/decode/total 계산.
@@ -38,6 +44,7 @@ object BenchmarkRunner {
         engine: InferenceEngine,
         prompt: String,
         model: String,
+        maxTokens: Int = DEFAULT_MAX_TOKENS,
         onToken: (String) -> Unit = {}
     ): BenchmarkOutcome = withContext(Dispatchers.Default) {
         engine.resetToSystemPrompt()
@@ -51,7 +58,7 @@ object BenchmarkRunner {
         val sb = StringBuilder()
 
         val success = withTimeoutOrNull(GEN_TIMEOUT_MS) {
-            engine.generateStreaming(prompt) { token ->
+            engine.generateStreaming(prompt, maxTokens) { token ->
                 if (firstTokenTime == 0L) firstTokenTime = System.currentTimeMillis()
                 sb.append(token)
                 tokenCount++
@@ -60,6 +67,11 @@ object BenchmarkRunner {
         }
 
         val endTime = System.currentTimeMillis()
+
+        // 엔진 자체 계측을 즉시 회수한다.
+        // ⚠️ 다음 회차의 resetToSystemPrompt()가 세션/대화를 갈아엎으면 값이 사라지므로 여기서 읽어야 한다.
+        val stats = engine.lastStats()
+
         val totalSec = (endTime - startTime) / 1000.0
         val ttftSec = if (firstTokenTime > 0L) (firstTokenTime - startTime) / 1000.0 else 0.0
         val decodeSec = if (firstTokenTime > 0L) (endTime - firstTokenTime) / 1000.0 else 0.0
@@ -81,6 +93,14 @@ object BenchmarkRunner {
             totalSec = totalSec,
             tokenCount = tokenCount,
             backend = engine.backend,   // 실제 실행된 백엔드("gpu"/"cpu")를 기록
+            maxTokens = maxTokens,      // 측정 조건(생성 상한)을 레코드에 남긴다
+
+            // 엔진레벨 계측 — 없으면 전부 null
+            promptTokens = stats?.prefillTokens,
+            decodeTokens = stats?.decodeTokens,
+            prefillTokPerSec = stats?.prefillTokPerSec,
+            engineTokPerSec = stats?.decodeTokPerSec,
+            engineTtftSec = stats?.ttftSec,
 
             memPeakMb = peakRss,
             nativeHeapMb = nativeHeap,
@@ -105,8 +125,9 @@ object BenchmarkRunner {
         engine: InferenceEngine,
         model: String,
         prompts: List<String> = DEFAULT_PROMPTS,
-        repeats: Int = 2,
-        warmups: Int = 1,
+        repeats: Int = DEFAULT_REPEATS,
+        warmups: Int = DEFAULT_WARMUPS,
+        maxTokens: Int = DEFAULT_MAX_TOKENS,
         onProgress: (done: Int, total: Int, label: String) -> Unit = { _, _, _ -> }
     ): Int = withContext(Dispatchers.Default) {
         val total = prompts.size * (warmups + repeats)
@@ -116,13 +137,13 @@ object BenchmarkRunner {
         for (prompt in prompts) {
             // 예열: 결과를 버린다
             repeat(warmups) {
-                runOnce(context, engine, prompt, model)
+                runOnce(context, engine, prompt, model, maxTokens)
                 done++
                 onProgress(done, total, "warmup")
             }
             // 본 측정: 기록한다
             repeat(repeats) { i ->
-                val outcome = runOnce(context, engine, prompt, model)
+                val outcome = runOnce(context, engine, prompt, model, maxTokens)
                 outcome.record?.let { rec ->
                     withContext(Dispatchers.IO) { BenchmarkLogger.append(context, rec) }
                     saved++

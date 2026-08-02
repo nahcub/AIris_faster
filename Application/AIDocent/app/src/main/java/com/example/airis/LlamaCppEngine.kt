@@ -39,9 +39,22 @@ class LlamaCppEngine : InferenceEngine{
         return NativeBridge.resetToSystemPrompt()
     }
 
-    override fun generateStreaming(prompt: String, onToken:(String)-> Unit): Boolean{
-        return NativeBridge.generateStreaming(prompt, onToken)
+    override fun generateStreaming(prompt: String, maxTokens: Int, onToken:(String)-> Unit): Boolean{
+        return NativeBridge.generateStreaming(prompt, maxTokens, onToken)
     }
+    // native-lib.cpp가 채워둔 DoubleArray를 EngineStats로 옮긴다(레이아웃은 NativeBridge 주석 참고).
+    override fun lastStats(): EngineStats? {
+        val v = NativeBridge.lastGenerationStats() ?: return null
+        if (v.size < 5) return null
+        return EngineStats(
+            prefillTokens = v[0].toInt(),
+            decodeTokens = v[1].toInt(),
+            prefillTokPerSec = v[2],
+            decodeTokPerSec = v[3],
+            ttftSec = v[4]
+        )
+    }
+
     override fun close(){
         NativeBridge.closeSession()
     }

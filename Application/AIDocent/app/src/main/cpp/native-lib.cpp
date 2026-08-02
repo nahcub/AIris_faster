@@ -19,6 +19,17 @@ static llama_context* ctx = nullptr;
 
 // Session management
 static llama_sampler* session_sampler = nullptr;
+
+// 직전 generateStreaming 1회의 엔진레벨 계측. Kotlin이 lastGenerationStats()로 회수한다.
+// LiteRT-LM의 Conversation.getBenchmarkInfo()와 같은 항목을 llama.cpp에서도 제공해 두 엔진을 대칭으로 맞춘다.
+// ⚠️ last_prefill_tokens는 '이번 턴에 새로 디코딩한' 토큰 수다. 시스템 프롬프트는 KV 캐시에 남아 있어
+//    여기 안 들어간다 — LiteRT-LM 쪽 같은 이름의 값과 의미가 다를 수 있으니 비교 전에 실측으로 확인할 것.
+static int    last_prefill_tokens = 0;
+static int    last_decode_tokens  = 0;
+static double last_prefill_tok_s  = 0.0;
+static double last_decode_tok_s   = 0.0;
+static double last_ttft_sec       = 0.0;
+static bool   last_stats_valid    = false;
 static bool session_initialized = false;
 
 // Prompt caching
@@ -92,12 +103,12 @@ Java_com_example_airis_NativeBridge_initSession(JNIEnv* env, jobject /* this */)
         return JNI_FALSE;
     }
 
-    // Add sampler filters: greedy + min_p + temperature + distribution
-    llama_sampler_chain_add(session_sampler, llama_sampler_init_top_p(0.8f, 1));
-    llama_sampler_chain_add(session_sampler, llama_sampler_init_min_p(0.0f, 1));
-    llama_sampler_chain_add(session_sampler, llama_sampler_init_temp(0.4f));
-    llama_sampler_chain_add(session_sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
-    LOGI("Sampler initialized");
+    // 벤치 공정성: 두 엔진 모두 greedy(argmax)로 고정한다.
+    // 확률적 샘플링은 회차마다 출력 길이가 달라져 tok/s·품질 비교에 노이즈가 되는데,
+    // 특히 llama.cpp는 LLAMA_DEFAULT_SEED가 '매번 새 난수 시드'를 뜻해서 재현조차 안 됐다.
+    // (LiteRtEngine의 SamplerConfig(topK=1)이 이것과 짝을 이룬다)
+    llama_sampler_chain_add(session_sampler, llama_sampler_init_greedy());
+    LOGI("Sampler initialized (greedy)");
 
     // Reset prompt caching state
     n_past_system = 0;
@@ -315,7 +326,7 @@ static size_t utf8_complete_prefix_len(const std::string& s) {
 // Session-based streaming text generation with real-time callback
 extern "C"
 JNIEXPORT jboolean JNICALL
-Java_com_example_airis_NativeBridge_generateStreaming(JNIEnv* env, jobject /* this */, jstring prompt_, jobject callback) {
+Java_com_example_airis_NativeBridge_generateStreaming(JNIEnv* env, jobject /* this */, jstring prompt_, jint max_tokens, jobject callback) {
     if (!model) {
         LOGE("Model not loaded");
         return JNI_FALSE;
@@ -380,7 +391,10 @@ Java_com_example_airis_NativeBridge_generateStreaming(JNIEnv* env, jobject /* th
     llama_batch batch = llama_batch_get_one(tokens.data(), n_tokens);
     LOGI("Decoding user prompt batch with %d tokens (starting from pos %d)...", batch.n_tokens, n_past_system);
 
+    // prefill 구간을 따로 잰다: 이 llama_decode 한 번이 user 프롬프트 전체의 프리필이다.
+    auto prefill_start = std::chrono::high_resolution_clock::now();
     int decode_result = llama_decode(ctx, batch);
+    auto prefill_end = std::chrono::high_resolution_clock::now();
     if (decode_result != 0) {
         LOGE("Failed to decode prompt, result: %d", decode_result);
         env->ReleaseStringUTFChars(prompt_, user_prompt);
@@ -414,7 +428,9 @@ Java_com_example_airis_NativeBridge_generateStreaming(JNIEnv* env, jobject /* th
 
     // Generate tokens and stream via callback
     int n_cur = 0;
-    const int n_max_gen = 1024;
+    // Kotlin이 넘긴 생성 상한(벤치 조건 통제용). 0 이하면 기존 기본값으로 폴백.
+    // 여기서 세는 n_cur는 '모델 토큰'이라 UI로 flush된 조각 수와 달리 정확하다.
+    const int n_max_gen = max_tokens > 0 ? max_tokens : 1024;
     const size_t LOOKBACK_SIZE = 200; // 최근 200자만 확인
     
     // 생성된 텍스트를 누적하여 추적
@@ -422,6 +438,10 @@ Java_com_example_airis_NativeBridge_generateStreaming(JNIEnv* env, jobject /* th
 
     // UI로 아직 못 보낸 "잘린 UTF-8 꼬리"를 보관하는 버퍼 (멀티바이트 문자 안전 전송용)
     std::string utf8_pending = "";
+
+    // 엔진레벨 TTFT: 첫 조각을 UI로 실제로 내보낸 순간 (app레벨 TTFT와 교차검증용)
+    bool first_token_seen = false;
+    auto first_token_time = start_time;
 
     LOGI("Starting streaming generation loop, max tokens: %d", n_max_gen);
 
@@ -471,6 +491,10 @@ Java_com_example_airis_NativeBridge_generateStreaming(JNIEnv* env, jobject /* th
         utf8_pending += piece_str;
         size_t flush_len = utf8_complete_prefix_len(utf8_pending);
         if (flush_len > 0) {
+            if (!first_token_seen) {
+                first_token_seen = true;
+                first_token_time = std::chrono::high_resolution_clock::now();
+            }
             std::string to_send = utf8_pending.substr(0, flush_len);
             utf8_pending.erase(0, flush_len);
 
@@ -514,7 +538,50 @@ Java_com_example_airis_NativeBridge_generateStreaming(JNIEnv* env, jobject /* th
 
     LOGI("Generation stats - Time: %.2f sec, Tokens: %d, Speed: %.2f tok/sec", seconds, n_cur, tokens_per_second);
 
+    // prefill/decode를 분리해 저장한다. 위의 tokens_per_second는 tokenize+prefill이 섞인 값이라
+    // 엔진 비교에 쓰면 안 되고, 아래 last_decode_tok_s가 순수 decode다.
+    auto sec_between = [](const std::chrono::high_resolution_clock::time_point& a,
+                          const std::chrono::high_resolution_clock::time_point& b) {
+        return std::chrono::duration_cast<std::chrono::microseconds>(b - a).count() / 1e6;
+    };
+    const double prefill_sec = sec_between(prefill_start, prefill_end);
+    const double decode_sec  = sec_between(prefill_end, end_time);
+
+    last_prefill_tokens = n_tokens;
+    last_decode_tokens  = n_cur;
+    last_prefill_tok_s  = prefill_sec > 0.0 ? n_tokens / prefill_sec : 0.0;
+    last_decode_tok_s   = decode_sec  > 0.0 ? n_cur    / decode_sec  : 0.0;
+    last_ttft_sec       = first_token_seen ? sec_between(start_time, first_token_time) : 0.0;
+    last_stats_valid    = true;
+
+    LOGI("Engine stats - prefill: %d tok / %.3f s (%.1f tok/s) | decode: %d tok / %.3f s (%.1f tok/s) | ttft: %.3f s",
+         n_tokens, prefill_sec, last_prefill_tok_s, n_cur, decode_sec, last_decode_tok_s, last_ttft_sec);
+
     // Session remains active for next generation call
     env->ReleaseStringUTFChars(prompt_, user_prompt);
     return JNI_TRUE;
+}
+
+// 직전 generateStreaming 1회의 엔진레벨 계측을 Kotlin으로 넘긴다.
+// 레이아웃: [prefill_tokens, decode_tokens, prefill_tok_s, decode_tok_s, ttft_sec]
+// 아직 한 번도 생성한 적이 없으면 null.
+extern "C"
+JNIEXPORT jdoubleArray JNICALL
+Java_com_example_airis_NativeBridge_lastGenerationStats(JNIEnv* env, jobject /* this */) {
+    if (!last_stats_valid) {
+        return nullptr;
+    }
+    jdouble values[5] = {
+        (jdouble)last_prefill_tokens,
+        (jdouble)last_decode_tokens,
+        last_prefill_tok_s,
+        last_decode_tok_s,
+        last_ttft_sec
+    };
+    jdoubleArray arr = env->NewDoubleArray(5);
+    if (arr == nullptr) {
+        return nullptr;
+    }
+    env->SetDoubleArrayRegion(arr, 0, 5, values);
+    return arr;
 }

@@ -36,7 +36,12 @@ object NativeBridge {
     )
 
     // Streaming generation with real-time callback
-    external fun generateStreaming(prompt: String, onToken: (String) -> Unit): Boolean
+    // ⚠️ maxTokens 인자 순서는 native-lib.cpp의 (jstring, jint, jobject)와 정확히 일치해야 한다.
+    external fun generateStreaming(prompt: String, maxTokens: Int, onToken: (String) -> Unit): Boolean
+
+    // 직전 generateStreaming 1회의 엔진레벨 계측.
+    // [prefillTokens, decodeTokens, prefillTokPerSec, decodeTokPerSec, ttftSec] — 아직 없으면 null.
+    external fun lastGenerationStats(): DoubleArray?
 
     // Generation performance statistics
     data class GenerationStats(
