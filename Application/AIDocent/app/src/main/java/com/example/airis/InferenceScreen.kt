@@ -103,7 +103,8 @@ fun InferenceScreen(
             if (autoRun.runSuite) {
                 isGenerating = true
                 val saved = runSuiteAndReport(
-                    context, engine, model, autoRun.repeats, autoRun.warmups
+                    context, engine, model,
+                    autoRun.repeats, autoRun.warmups, autoRun.maxTokens
                 ) { done, total, label ->
                     statusText = "🧪 Suite $done/$total ($label)"
                 }
@@ -292,7 +293,7 @@ fun InferenceScreen(
                                                 rec.ttftSec, rec.decodeTokPerSec, rec.totalSec, rec.tokenCount
                                             )
                                             withContext(Dispatchers.IO) {
-                                                BenchmarkLogger.append(context, rec)
+                                                BenchmarkLogger.append(context, rec, outcome.text)
                                             }
                                         }
                                         outcome.timedOut ->
@@ -341,7 +342,8 @@ fun InferenceScreen(
                         coroutineScope.launch {
                             try {
                                 val saved = runSuiteAndReport(
-                                    context, engine, model, repeats = null, warmups = null
+                                    context, engine, model,
+                                    repeats = null, warmups = null, maxTokens = null
                                 ) { done, total, label ->
                                     statusText = "🧪 Suite $done/$total ($label)"
                                 }
@@ -497,13 +499,14 @@ private suspend fun loadAndInit(
 }
 
 // Suite 실행 + 완료 신호. 버튼과 자동 실행이 공유하는 지점이라 버튼 람다 밖에 둔다.
-// repeats/warmups가 null이면 BenchmarkRunner의 기본값을 쓴다(자동화가 --ei로 덮어쓸 수 있음).
+// repeats/warmups/maxTokens가 null이면 기본값을 쓴다(자동화가 --ei로 덮어쓸 수 있음).
 private suspend fun runSuiteAndReport(
     context: Context,
     engine: InferenceEngine,
     model: ModelFile,
     repeats: Int?,
     warmups: Int?,
+    maxTokens: Int?,
     onProgress: (done: Int, total: Int, label: String) -> Unit
 ): Int {
     val saved = BenchmarkRunner.runSuite(
@@ -512,6 +515,7 @@ private suspend fun runSuiteAndReport(
         model = model.label,
         repeats = repeats ?: BenchmarkRunner.DEFAULT_REPEATS,
         warmups = warmups ?: BenchmarkRunner.DEFAULT_WARMUPS,
+        maxTokens = maxTokens ?: DEFAULT_MAX_TOKENS,
         onProgress = onProgress
     )
     BenchSignal.suiteDone(context, saved, model.label, engine.backend)

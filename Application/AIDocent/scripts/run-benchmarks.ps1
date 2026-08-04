@@ -4,7 +4,8 @@
 # 순서대로 적어둔 것. 손잡이는 앱이 이미 제공한다:
 #   입력  : am start 인텐트 엑스트라   (AutoRunRequest.kt)
 #   완료  : benchmarks/last_run.txt    (BenchSignal.kt)
-#   출력  : benchmarks/results.jsonl   (BenchmarkLogger.kt)
+#   출력  : benchmarks/results.jsonl   (정량 지표)      ┐ run_id 로 조인되는
+#           benchmarks/responses.jsonl (답변 본문)      ┘ 한 쌍 (BenchmarkLogger.kt)
 #
 # 이 스크립트가 추가로 하는 일은 '조건 통제'다 — 온도 게이트, 기기 설정 고정,
 # 순서 효과 분산. 통제한 조건은 benchmark_results/run_conditions.csv 에 남겨서
@@ -24,8 +25,16 @@ $models = @(
     "gemma-4-E2B-it-docent-lora-int4.litertlm"   # LoRA본
 )
 
+
 $repeats = 5      # 프롬프트당 기록 회차
 $warmups = 1      # 프롬프트당 버리는 예열 회차
+
+# 생성 길이 상한. 0이면 앱 기본값(DEFAULT_MAX_TOKENS)을 쓴다 = 자연 종료(EOS)까지 받는다.
+# 품질 평가용 응답을 모으려면 이쪽이어야 한다 — 상한에 걸리면 문장 중간에서 잘린다.
+# 길이를 고정한 조건에서 속도만 다시 재려면 256 처럼 실제 값을 넣는다. 그 값이 레코드의
+# max_tokens 로 남아 results.jsonl / responses.jsonl 에서 두 조건을 갈라 볼 수 있다.
+# ⚠️ 그 경우 responses.jsonl 에는 '잘린 응답'이 쌓인다. 지우지 말고 max_tokens 로 필터할 것.
+$maxTokens = 0
 
 # 순서 효과 분산. $true 면 A,B,A,B,... 로 번갈아 돈다.
 # 대가: 앱 재시작마다 예열이 다시 필요해서 총 실행 회차가 늘어난다
@@ -65,10 +74,21 @@ $activity = "$appId/.MainActivity"
 $filesDir = "/sdcard/Android/data/$appId/files"
 $marker   = "$filesDir/benchmarks/last_run.txt"
 $results  = "$filesDir/benchmarks/results.jsonl"
+$responses = "$filesDir/benchmarks/responses.jsonl"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $outDir      = Join-Path $projectRoot "benchmark_results"   # .gitignore 처리된 회수 폴더
 $condCsv     = Join-Path $outDir "run_conditions.csv"
+
+# 회수 구조 — 누적본과 회차별 원본을 분리한다.
+#   $outDir/results.jsonl        누적본. 실행할 때마다 append. ⚠️ 절대 덮어쓰지 않는다
+#   $outDir/responses.jsonl      〃
+#   $outDir/runs/<stamp>-*.jsonl 이번 실행분만 담긴 불변 원본
+# 옛날엔 pull 이 누적본을 그대로 덮어써서 이전 실행분이 로컬에서 사라졌다(2026-08-02 사고).
+# 기기의 results.jsonl.<stamp> 백업으로 복구는 됐지만, 로컬이 스스로 누적해야 안전하다.
+$runsDir     = Join-Path $outDir "runs"
+$masterRes   = Join-Path $outDir "results.jsonl"
+$masterResp  = Join-Path $outDir "responses.jsonl"
 
 # SDK 해석: 환경변수 우선, 없으면 표준 설치 경로 (run-on-device.ps1 과 동일한 폴백)
 $sdkRoot = $env:ANDROID_HOME
@@ -80,7 +100,38 @@ if (-not (Test-Path $adb)) {
     throw "adb not found at $adb. Set ANDROID_HOME to your Android SDK directory."
 }
 
-if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
+if (-not (Test-Path $outDir))  { New-Item -ItemType Directory -Path $outDir  | Out-Null }
+if (-not (Test-Path $runsDir)) { New-Item -ItemType Directory -Path $runsDir | Out-Null }
+
+# 회차 파일을 누적본 뒤에 '바이트 그대로' 이어 붙인다. 붙인 줄 수를 반환.
+#
+# ⚠️ Get-Content | Add-Content 를 쓰면 안 된다. PowerShell 5.1 에서
+#    -Encoding utf8 은 파일을 새로 만들 때 BOM 을 박고(그 줄의 JSON 파싱이 깨진다),
+#    기본값은 시스템 ANSI 라 한글 응답이 깨진다. JSONL 은 그냥 UTF-8 바이트열이므로
+#    문자로 해석하지 말고 바이트로 옮기는 게 유일하게 안전하다.
+function Add-ToMaster([string]$src, [string]$master) {
+    if (-not (Test-Path $src)) {
+        Write-Host "  [!] $(Split-Path -Leaf $src) 없음 — 누적 건너뜀" -ForegroundColor Yellow
+        return 0
+    }
+    $bytes = [System.IO.File]::ReadAllBytes($src)
+    if ($bytes.Length -eq 0) { return 0 }
+
+    # 누적본이 개행 없이 끝났으면 마지막 줄과 새 첫 줄이 한 줄로 붙어버린다.
+    if ((Test-Path $master) -and ((Get-Item $master).Length -gt 0)) {
+        $fsr = [System.IO.File]::OpenRead($master)
+        try {
+            $fsr.Seek(-1, [System.IO.SeekOrigin]::End) | Out-Null
+            $lastByte = $fsr.ReadByte()
+        } finally { $fsr.Close() }
+        if ($lastByte -ne 10) { [System.IO.File]::AppendAllText($master, "`n") }
+    }
+
+    $fs = [System.IO.File]::Open($master, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write)
+    try { $fs.Write($bytes, 0, $bytes.Length) } finally { $fs.Close() }
+
+    ([System.Text.Encoding]::UTF8.GetString($bytes) -split "`n" | Where-Object { $_.Trim() }).Count
+}
 
 # ══════════════════════════════════════════════════════════════
 #  기기 상태 읽기 / 쓰기
@@ -255,6 +306,9 @@ if ($interleave) {
 Write-Host ""
 Write-Host "모델 $($models.Count)개 / repeats=$repeats / 실행 $($plan.Count)회 " -NoNewline -ForegroundColor Cyan
 Write-Host $(if ($interleave) { "(인터리브)" } else { "(블록)" }) -ForegroundColor Cyan
+Write-Host "생성 길이: " -NoNewline -ForegroundColor Cyan
+Write-Host $(if ($maxTokens -gt 0) { "max_tokens=$maxTokens (고정 — 응답이 잘릴 수 있음)" }
+             else { "앱 기본값 (자연 종료까지 — 품질 평가용)" }) -ForegroundColor Cyan
 
 # ══════════════════════════════════════════════════════════════
 #  본 실행
@@ -269,10 +323,13 @@ $saved = @{
     stayOn         = Get-DeviceSetting "global" "stay_on_while_plugged_in"
 }
 
-# 기존 results.jsonl 을 타임스탬프 붙여 옮긴다(지우는 게 아니라 이름만 바꿈).
-# results.jsonl 은 append-only 라, 안 치우면 pull 한 파일에 옛 레코드가 섞여 온다.
+# 기존 출력 파일을 타임스탬프 붙여 옮긴다(지우는 게 아니라 이름만 바꿈).
+# 둘 다 append-only 라, 안 치우면 pull 한 파일에 옛 레코드가 섞여 온다.
+# ⚠️ 두 파일은 run_id 로 짝지어진 한 쌍이니 항상 같은 stamp 로 함께 치울 것 —
+#    한쪽만 치우면 조인했을 때 짝 없는 행이 생긴다.
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 & $adb shell "test -f '$results' && mv '$results' '$results.$stamp'" | Out-Null
+& $adb shell "test -f '$responses' && mv '$responses' '$responses.$stamp'" | Out-Null
 
 if (-not (Test-Path $condCsv)) {
     "timestamp,model,repeats,ap_start,skin_start,bat_start,ap_end,skin_end,thermal_end,cool_waited_s,cool_met,saved,expected,signal" `
@@ -298,9 +355,15 @@ try {
         # -S = 프로세스 강제 재시작. 모델마다 완전히 새 프로세스라 조건이 같아진다.
         $modelName   = $entry.Model
         $entryRepeat = $entry.Repeats
+
+        # maxtokens 는 '지정 안 하면 앱 기본값'이 되어야 하므로 0일 땐 엑스트라를 아예 안 붙인다
+        # (0을 그대로 넘기면 AutoRunRequest 가 null 로 접긴 하지만, 안 보내는 편이 의도가 분명하다).
+        $extraArgs = @()
+        if ($maxTokens -gt 0) { $extraArgs = @("--ei", "maxtokens", $maxTokens) }
+
         & $adb shell am start -S -n $activity `
             -e model $modelName -e autorun suite `
-            --ei repeats $entryRepeat --ei warmups $warmups | Out-Null
+            --ei repeats $entryRepeat --ei warmups $warmups @extraArgs | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "am start 실패 (기기가 잠기지 않았는지 확인)" }
 
         $signal  = Wait-BenchSignal
@@ -341,9 +404,30 @@ finally {
 # ══════════════════════════════════════════════════════════════
 
 Write-Host "`n결과 회수 중..." -ForegroundColor Cyan
-& $adb pull $results $outDir
+
+# 1) 이번 실행분을 stamp 붙은 이름으로 받는다(불변 원본).
+#    답변 본문은 run_id 로 results 와 조인되므로 반드시 같이 회수한다 —
+#    따로 받으면 두 파일의 시점이 어긋나 짝 없는 행이 생긴다.
+$runRes  = Join-Path $runsDir "$stamp-results.jsonl"
+$runResp = Join-Path $runsDir "$stamp-responses.jsonl"
+
+& $adb pull $results   $runRes
+& $adb pull $responses $runResp
+
+# 2) 누적본에 이어 붙인다. pull 이 누적본을 직접 건드리지 않으므로 덮어쓸 일이 없다.
+$nRes  = Add-ToMaster $runRes  $masterRes
+$nResp = Add-ToMaster $runResp $masterResp
+
+if ($nRes -ne $nResp) {
+    # 두 파일은 BenchmarkLogger.append 가 한 번에 쓰므로 1:1 이어야 한다.
+    # 어긋났다면 조인했을 때 짝 없는 행이 생긴다는 뜻 — 그냥 넘기면 안 된다.
+    Write-Host "  [!] 레코드 $nRes 건 vs 응답 $nResp 건 — 1:1 이 아님. run_id 로 확인할 것" -ForegroundColor Yellow
+}
 
 Write-Host ""
-Write-Host "완료." -ForegroundColor Green
-Write-Host "  측정값   : $(Join-Path $outDir 'results.jsonl')"
+Write-Host "완료. 이번 실행 $nRes 건 누적됨" -ForegroundColor Green
+Write-Host "  누적본   : $masterRes"
+Write-Host "             $masterResp  (run_id 로 조인)"
+Write-Host "  이번회차 : $runRes"
+Write-Host "             $runResp"
 Write-Host "  실행조건 : $condCsv"

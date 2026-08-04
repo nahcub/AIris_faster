@@ -5,14 +5,15 @@
 온디바이스 미술관 도슨트 앱(AIris)에서 **LLM 추론 파트만 떼어낸 실험용 프로젝트**.
 개선안(엔진 이전, 하드웨어 최적화, LoRA, RAG)을 **측정 가능한 벤치마크로 비교**하는 게 목표다. 전체 계획은 저장소 루트의 `../../PLAN.md` 참고.
 
-### 지금 어디까지 왔나 (2026-07-31)
+### 지금 어디까지 왔나 (2026-08-02)
 
 **현재 주력은 LiteRT-LM + Gemma 4 E2B + 도슨트 LoRA다.** 앱은 `EngineType.LITE_RT`로 고정돼 있고(`InferenceScreen.kt`). 모델 파일은 더 이상 고정이 아니라 **앱 실행 시 선택 화면에서 고른다**(`ModelCatalog`, 아래 "모델 파일" 절) — 기기엔 `gemma-4-E2B-it-docent-lora-int4.litertlm`(LoRA본)과 `gemma-4-E2B-it-int4.litertlm`(대조군)이 함께 올라가 있다.
 
 | 축 | 상태 |
 |---|---|
 | llama.cpp → LiteRT-LM 이전 | **완료.** 추상화(`InferenceEngine`) 위에서 두 엔진 공존, 측정도 끝남 |
-| 측정 신뢰도 (계측·조건 통제) | **완료.** 두 엔진 모두 엔진레벨 계측(`lastStats()`) 제공 → app레벨 체감값과 한 레코드에서 교차검증. 생성 상한(`maxTokens=256`)·greedy 샘플링으로 회차 조건 통제 (아래 "현재 측정 중인 성능 지표" 절) |
+| 측정 신뢰도 (계측·조건 통제) | **완료.** 두 엔진 모두 엔진레벨 계측(`lastStats()`) 제공 → app레벨 체감값과 한 레코드에서 교차검증. greedy 샘플링으로 회차 조건 통제. 생성 상한은 2026-08-02에 256 → 1024로 완화(통제 → 안전망) (아래 "현재 측정 중인 성능 지표" 절) |
+| 품질 평가 재료 수집 | **완료(2026-08-02).** 버려지던 답변 본문을 `responses.jsonl`에 `run_id`로 수집. 채점 방법론은 미정 (아래 "생성 길이와 응답 수집" 절) |
 | 모델 선택 UI + adb 자동화 | **완료(2026-07-31).** `ModelCatalog`/`AutoRunRequest`/`BenchSignal` 추가, 기기에서 수동 선택 화면·자동 Suite 실행 둘 다 검증됨(아래 "모델 파일" 절) |
 | 하드웨어 백엔드 | **원인 규명 완료(2026-08-01), 해법은 업스트림에 막힘.** 회귀가 아니라 **모델 파일이 바뀐 것**이었다 — 우리가 변환한 `.litertlm`은 활성값이 fp32(`dynamic_wi4_afp32`의 `afp32`)라 GPU 델리게이트가 그래프를 거의 못 먹고 `INTERNAL`로 실패, CPU로 강등된다. fp16으로 뽑으면 되는데 `--experimental_use_fp16`은 litert-torch 버그로 변환이 깨지고(가중치는 fp32 강제 로드, 캐시만 fp16 → attention에서 dtype 충돌), `--experimental_use_mixed_precision`이 남은 미검증 후보다. **당분간 CPU로 진행이 합리적** — LoRA 품질 비교는 대조군·LoRA본 둘 다 CPU라 이미 공정하다. 자세한 근거는 `docs/notes/2026-08-01-gpu-fallback-activation-type.md` |
 | LoRA | **진행 중.** 도슨트 화법 LoRA를 Colab에서 학습 → `.litertlm` int4 변환 (아래 Colab 절) |
@@ -34,9 +35,9 @@
   - **수동 버튼과 adb 자동 실행이 같은 헬퍼를 공유**: `loadAndInit`(로드→세션→시스템 프롬프트 체인) / `runSuiteAndReport`(Suite + 완료 신호). 자동화 전용 코드 경로를 따로 두면 둘이 서서히 어긋나므로, 새 동작을 넣을 땐 이 두 함수 안에 넣을 것
   - **모델 교체는 앱 재시작**이 전제(로드는 1회). 자동화도 모델마다 `am start -S`로 새로 띄우므로 측정 조건이 같아진다
 - `ModelCatalog.kt` — **모델 파일을 찾아주는 창구.** `EngineFactory`가 '어떤 엔진'을 고르는 창구였다면 이건 '어떤 모델 파일'. `scan(context, type)`이 `getExternalFilesDir(null)`(= adb push 목적지)에서 엔진에 맞는 확장자만 골라 목록화, `findByName`은 자동화가 준 파일명을 **같은 목록에서** 찾는다(경로를 따로 조립하지 않게). `extensionFor`가 엔진↔포맷 짝(`LITE_RT`↔`litertlm`, `LLAMA_CPP`↔`gguf`)을 코드로 못박는 지점 — `when`이 exhaustive라 엔진이 늘면 컴파일러가 짚어줌
-- `AutoRunRequest.kt` — **adb 무인 실행 진입 규약.** 인텐트 엑스트라(`-e model` / `-e autorun suite` / `--ei repeats` / `--ei warmups`) 파싱을 한 곳에 가둔 것. 좌표 탭(`input tap`)은 레이아웃 바뀌면 깨지므로 손잡이는 인텐트다. 엑스트라 없으면 `MANUAL` → 평소의 수동 선택 화면
+- `AutoRunRequest.kt` — **adb 무인 실행 진입 규약.** 인텐트 엑스트라(`-e model` / `-e autorun suite` / `--ei repeats` / `--ei warmups` / `--ei maxtokens`) 파싱을 한 곳에 가둔 것. 좌표 탭(`input tap`)은 레이아웃 바뀌면 깨지므로 손잡이는 인텐트다. 엑스트라 없으면 `MANUAL` → 평소의 수동 선택 화면
 - `BenchSignal.kt` — **자동화의 완료 신호.** logcat(`AirisBench` 태그 `SUITE_DONE ...`)과 마커 파일(`benchmarks/last_run.txt`) 양쪽에 같은 한 줄. 스크립트는 파일 폴링이 더 견고하다(logcat 대기는 '앱 시작 전에 걸어놨어야 한다'는 레이스가 있음). ⚠️ `SUITE_FAILED`/`MODEL_NOT_FOUND` 실패 신호를 **반드시** 함께 남길 것 — 안 그러면 스크립트가 영원히 기다린다
-- `InferenceEngine.kt` — **추론 엔진 계약서(interface)**. `name`(엔진 이름, 벤치 기록용) + `backend`(실제 실행 하드웨어 `"gpu"/"cpu"`, 벤치 기록용) + `loadModel/initSession/setArtwork/decodeSystemPrompt/resetToSystemPrompt/generateStreaming/close`. UI가 바라보는 추상화 지점. **`backend`는 '의도'가 아니라 '실제 로드에 성공한' 값을 보고**해야 라벨이 진실이 됨(GPU 실패→CPU 폴백 시 `"cpu"`). **`setArtwork(artwork: Artwork)`는 `decodeSystemPrompt()` 전에 호출** — 두 엔진이 같은 `Artwork`를 받아 각자 방식으로 system 메시지를 만드는 공통 입구(동등성 보장). 안 부르면 빈 `Artwork()` 기준. `resetToSystemPrompt()`는 벤치 회차 독립을 위해 '시스템 프롬프트만 있는 깨끗한 상태'로 되감기. **`generateStreaming(prompt, maxTokens, onToken)`의 `maxTokens`는 벤치 조건 통제용 생성 상한**(기본 `DEFAULT_MAX_TOKENS = 256`, 같은 파일의 top-level const). **`lastStats(): EngineStats?`는 직전 생성 1회의 엔진레벨 계측**(모델 토큰 기준 ground truth) — 계측을 못 주는 엔진은 기본 구현이 null을 반환하므로 새 엔진이 안 깨진다. 자세한 주의사항은 아래 "현재 측정 중인 성능 지표" 절
+- `InferenceEngine.kt` — **추론 엔진 계약서(interface)**. `name`(엔진 이름, 벤치 기록용) + `backend`(실제 실행 하드웨어 `"gpu"/"cpu"`, 벤치 기록용) + `loadModel/initSession/setArtwork/decodeSystemPrompt/resetToSystemPrompt/generateStreaming/close`. UI가 바라보는 추상화 지점. **`backend`는 '의도'가 아니라 '실제 로드에 성공한' 값을 보고**해야 라벨이 진실이 됨(GPU 실패→CPU 폴백 시 `"cpu"`). **`setArtwork(artwork: Artwork)`는 `decodeSystemPrompt()` 전에 호출** — 두 엔진이 같은 `Artwork`를 받아 각자 방식으로 system 메시지를 만드는 공통 입구(동등성 보장). 안 부르면 빈 `Artwork()` 기준. `resetToSystemPrompt()`는 벤치 회차 독립을 위해 '시스템 프롬프트만 있는 깨끗한 상태'로 되감기. **`generateStreaming(prompt, maxTokens, onToken)`의 `maxTokens`는 벤치 조건 통제용 생성 상한**(기본 `DEFAULT_MAX_TOKENS = 256`, 같은 파일의 top-level const). ⚠️ **`DEFAULT_MAX_TOKENS`는 2026-08-02에 256 → 1024로 올렸다** — '통제'가 아니라 '안 걸리는 안전망'으로 성격이 바뀌었다(왜인지는 아래 "생성 길이와 응답 수집" 절). 0·음수를 '무제한'으로 쓰면 안 된다(llama.cpp는 1024 폴백, LiteRT는 첫 토큰에서 즉시 취소 — 정반대). **`lastStats(): EngineStats?`는 직전 생성 1회의 엔진레벨 계측**(모델 토큰 기준 ground truth) — 계측을 못 주는 엔진은 기본 구현이 null을 반환하므로 새 엔진이 안 깨진다. 자세한 주의사항은 아래 "현재 측정 중인 성능 지표" 절
 - `LlamaCppEngine.kt` — **(휴면) 과거 축.** `InferenceEngine` 구현체(어댑터), 몸통은 `NativeBridge`에 위임. `name`으로 `"llama.cpp"`, `backend`로 `"cpu"` 보고(arm64 CPU 전용 빌드). `lastStats()`는 `NativeBridge.lastGenerationStats()`가 준 `DoubleArray`를 `EngineStats`로 옮긴다(길이 5 미만이면 null). 지금 앱은 이 경로를 타지 않는다 — 재현·대조용으로만 남겨둠
 - `LiteRtEngine.kt` — `InferenceEngine` 구현체(어댑터). **LiteRT-LM 런타임(`com.google.ai.edge.litertlm`)을 감싸는 층**. JNI 없이 순수 Kotlin(라이브러리가 이미 컴파일된 AAR). `Engine`(모델) + `Conversation`(세션) 구조. 시스템 프롬프트는 `ConversationConfig.systemInstruction`으로 주입, `resetToSystemPrompt`는 대화를 새로 열어 구현(LiteRT-LM엔 명시적 reset 없음). **작품 본문은 `formatArtworkInfo(artwork)`가 `prompt_generate.cpp`의 `formatArtworkInfo()`를 Kotlin으로 1:1 미러링** — ⚠️ 단 llama.cpp는 `<|im_start|>system … <|im_end|>` Qwen 템플릿 태그를 직접 붙이지만 LiteRT-LM은 `systemInstruction` 텍스트를 런타임이 알아서 채팅 템플릿으로 감싸므로, 여기선 태그를 빼고 '본문만' 재현해야 이중 래핑 없이 두 엔진이 논리적으로 같은 system 메시지를 봄, `sendMessageAsync`+`CountDownLatch`로 async 스트리밍을 blocking 계약에 맞춤, ⚠️ **`maxTokens` 상한은 `cancelProcess()`로 스트림을 끊어 구현하는데 LiteRT-LM이 그 응답을 `onDone`이 아니라 `onError(CancellationException)`로 준다** — `capped` 플래그로 구분해 정상 종료로 처리해야 한다(안 하면 `runOnce`가 레코드를 버려서 *상한에 안 걸린 짧은 답변만* `results.jsonl`에 남는 조용한 편향이 생김. 2026-07-31에 발견·수정), 토큰 텍스트는 `Message→Contents→Content.Text.text` 체인으로 추출. `Context` 필요(cacheDir). `name`으로 `"litert-lm"` 보고. **엔진레벨 계측은 `lastStats()`가 `Conversation.getBenchmarkInfo()`(@ExperimentalApi)를 감싼 것** — ⚠️ `loadModel`이 엔진을 만들기 **전에** `ExperimentalFlags.enableBenchmark = true`를 켜야 한다(앱 전역 싱글톤을 `Engine.initialize()`가 한 번만 읽음). 실패해도 예외를 위로 안 던지고 null로 떨어뜨려 app레벨 측정은 계속되게 함. **백엔드 선택은 `loadModel`이 GPU 먼저 시도 → 예외 시 CPU 폴백(`tryLoad` 헬퍼), 실제 성공한 백엔드를 `resolvedBackend`에 담아 `backend`로 보고**(logcat `loaded with backend=...`). ⚠️ **GPU 성공에는 조건이 세 개**고 하나라도 빠지면 조용히 CPU로 강등된다: (1) 매니페스트에 `libOpenCL.so`/`libvndksupport.so` `<uses-native-library>` 선언, (2) 기기가 OpenCL 노출(S25/Adreno는 노출, Tensor G3·일부 중저가칩은 미노출), (3) **모델 파일의 활성값이 fp16**(`.litertlm` 섹션 태그 `prefer_activation_type`). S25에서 GPU 성공 기록(TTFT ~0.15s, tok/s가 CPU 대비 ~2배)은 **Google 공식 `litert-community` 파일 기준**이고, 우리가 fp32로 변환한 파일은 같은 폰에서 실패한다 — 3번이 빠져서다(2026-08-01 실측, `docs/notes/2026-08-01-gpu-fallback-activation-type.md`). Backend는 `Backend.GPU()/CPU()/NPU()`(litertlm의 nested class)
 - `EngineFactory.kt` — `EngineType`(`LLAMA_CPP` / `LITE_RT`) 보고 엔진 생성. `LiteRtEngine`이 `Context`를 요구해 `create(type, context)` 시그니처. 엔진 교체는 `InferenceScreen`의 `EngineFactory.create(...)` 인자 한 줄. **현재 `LITE_RT`로 고정**
@@ -44,8 +45,10 @@
 - `Artwork.kt` — 작품 하나의 메타데이터 `data class`(`title/author/type/technique/school/date/description`). **두 엔진이 시스템 프롬프트를 만들 때 공통으로 받는 타입**. 필드 순서는 native `setArtworkInfo`(JNI) 인자 순서와 맞춰 둠(어댑터에서 그대로 넘기기 편하게)
 - `ArtworkRecognizer.kt` — **작품 인식 이음새(interface)**. `InferenceEngine`이 '엔진'을 갈아끼우는 추상화였듯, 이건 '작품을 알아내는 방법'을 갈아끼우는 추상화. 지금은 실제 인식 없이 고정 작품 하나(Darmstadt Madonna, `art_metadata.json` 첫 항목)를 반환하는 stub `FixedArtworkRecognizer`뿐. 나중에 카메라/이미지 기반 `recognize(image)` 구현체를 추가하면 호출부(`InferenceScreen`)는 recognizer 교체 한 줄 외엔 안 건드림
 - `BenchmarkLogger.kt` — 벤치 결과 1건 = `BenchmarkRecord`(data class, PLAN Phase 0 스키마: `run_id/timestamp/engine/model/prompt/ttft/tok_s/latency/token_count` + **자원 지표** `mem_peak/native_heap_mb/temp_start_c/temp_end_c/thermal_status`(실측) + `backend`(실측 `"gpu"/"cpu"`, `BenchmarkRunner`가 `engine.backend`로 주입), `lora/rag`은 나중 Phase용 null) + **측정 조건** `max_tokens` + **엔진레벨 계측(ground truth)** `prompt_tokens/decode_tokens/prefill_tok_s/engine_tok_s/engine_ttft`(엔진이 못 주면 null). 엔진레벨을 app레벨(`ttft/tok_s/token_count`) 옆에 나란히 두는 이유는 **교차검증** — 체감값과 실측 토큰 수가 얼마나 벌어지는지 같은 줄에서 볼 수 있어야 한다. ⚠️ backend 로깅 이전(~2026-07-26)에 쌓인 레코드는 `backend:null`이라 timestamp로 수동 라벨 필요. 기기의 `getExternalFilesDir(null)/benchmarks/results.jsonl`에 **JSONL(한 줄=한 레코드)**로 append. `org.json.JSONObject`로 escape 안전 처리. `adb pull`로 컴퓨터 회수
+  - **`append(context, record, response)`가 두 파일에 동시에 쓴다** — 정량 지표는 `results.jsonl`, 답변 본문은 `responses.jsonl`. 한 함수 안에 둔 이유는 호출부가 '레코드는 남겼는데 응답은 잊는' 실수를 못 하게 하려고. 저장 지점이 늘어도 `append` 하나만 부르면 두 파일이 항상 맞고, **행 수가 정확히 1:1**이 된다(warmup·실패 회차는 애초에 여기 안 온다 → 조인이 항상 완전 매칭)
+  - `responses.jsonl` 스키마는 `run_id`(조인 키) / `timestamp` / `max_tokens` / `prompt` / `response`. **`prompt`를 중복 저장하는 건 의도적** — 조인 없이 이 파일 하나만으로 사람·LLM-judge에게 던질 수 있어야 한다. **`max_tokens`도 넣어 뒀는데 '이 응답이 잘렸을 수 있는가'를 파일만 보고 알기 위해서다**(self-describing). ⚠️ **`model`/`engine`은 일부러 뺐다 — 품질 평가는 블라인드여야 하고, 파일에 모델명이 박혀 있으면 judge 프롬프트를 만들 때 새어 들어간다.** 채점이 끝난 뒤 `run_id`로 조인해 붙일 것
 - `HardwareStats.kt` — 회차마다 찍는 **OS 자원 지표(RAM·발열) 읽기 헬퍼**(`object`). 엔진 무관 프로세스/기기 지표라 측정 계층(`BenchmarkRunner`)에서만 씀. `peakRssMb`(`/proc/self/status`의 `VmHWM` 파싱, 프로세스 누적 peak RSS), `nativeHeapMb`(`Debug.getNativeHeapAllocatedSize`, llama.cpp/모델 C++ 몫), `batteryTempC`(sticky `ACTION_BATTERY_CHANGED`의 `EXTRA_TEMPERATURE`), `thermalStatus`(`PowerManager.currentThermalStatus`, 스로틀링 단계). 어떤 read든 실패하면 null 반환(측정이 벤치를 안 깨게). **전력은 외부 계측 없이는 근사라 제외, CPU/SoC sysfs 온도는 앱 SELinux로 막혀 배제** — 배터리 온도+thermal status만 실측
-- `BenchmarkRunner.kt` — 측정 실행 계층. `runOnce`(reset→생성→지표 계산 1사이클, 단발/Suite 공유 단위) + `runSuite`(고정 프롬프트셋 × [warmup 폐기 + repeats 기록]). `runOnce`가 `Context`를 받아 생성 **직전 온도** / **직후 RAM·온도·thermal**을 `HardwareStats`로 스냅샷하고 `engine.backend`(gpu/cpu)를 레코드에 기입. ⚠️ **엔진레벨 계측(`engine.lastStats()`)은 생성 직후 즉시 회수**한다 — 다음 회차의 `resetToSystemPrompt()`가 세션/대화를 갈아엎으면 값이 사라지기 때문. 기본값 `warmups=1`(콜드스타트 버림) + `repeats=2`(장치 제작 단계라 축소, 정식 측정 땐 5+로) — `DEFAULT_WARMUPS`/`DEFAULT_REPEATS` 상수라 자동화가 `--ei repeats N`으로 덮어쓸 수 있고 Suite 버튼 라벨도 이 값을 따라감
+- `BenchmarkRunner.kt` — 측정 실행 계층. `runOnce`(reset→생성→지표 계산 1사이클, 단발/Suite 공유 단위) + `runSuite`(고정 프롬프트셋 × [warmup 폐기 + repeats 기록]). **`DEFAULT_PROMPTS`는 2026-08-02에 영어 → 한국어로 바꿨다** — LoRA를 한국어로 학습시켜 놓고 영어로 재면 화법이 전이 안 돼 핵심 효과를 못 잰다(아래 "생성 길이와 응답 수집" 절). ⚠️ 학습셋 문구를 그대로 쓰면 암기 검증이 되므로 held-out으로 고를 것, **반말인 것도 학습셋 입력 분포에 맞춘 의도**다. `runOnce`가 `Context`를 받아 생성 **직전 온도** / **직후 RAM·온도·thermal**을 `HardwareStats`로 스냅샷하고 `engine.backend`(gpu/cpu)를 레코드에 기입. ⚠️ **엔진레벨 계측(`engine.lastStats()`)은 생성 직후 즉시 회수**한다 — 다음 회차의 `resetToSystemPrompt()`가 세션/대화를 갈아엎으면 값이 사라지기 때문. 기본값 `warmups=1`(콜드스타트 버림) + `repeats=2`(장치 제작 단계라 축소, 정식 측정 땐 5+로) — `DEFAULT_WARMUPS`/`DEFAULT_REPEATS` 상수라 자동화가 `--ei repeats N`으로 덮어쓸 수 있고 Suite 버튼 라벨도 이 값을 따라감
 
 > **왜 이렇게 나눴나**: 엔진을 갈아끼울 때 UI(`InferenceScreen`)를 안 건드리려고 추상화. **`LiteRtEngine`이 이 추상화 위에서 실제로 추가되면서 검증됨** — `InferenceEngine` 구현 + `EngineFactory` 케이스 한 줄, `InferenceScreen`은 엔진 선택 인자 외엔 안 건드림(엔진이 `name`을 보고하므로 벤치 라벨도 자동으로 따라옴). `.task`(MediaPipe tasks-genai)가 아니라 **`.litertlm`(LiteRT-LM)**을 고른 이유: MediaPipe LLM API는 유지보수 전용으로 동결됐고, LiteRT-LM은 CPU/GPU/NPU를 한 포맷으로 커버한다. 배경/개념 정리는 `docs/notes/2026-07-18-inference-engine-abstraction.md`.
 
@@ -62,7 +65,8 @@
 
 **데이터 (git 미추적, 코드 아님)**
 - `datasets/docent_seeds.jsonl` — **LoRA 학습 데이터 100건.** `art_metadata.json`의 실제 작품 기록에 근거한 관찰 유도형 도슨트 문답(artwork 50 / artist 25 / movement 25). Colab에선 Drive(`MyDrive/airis_refactoring/`)에서 읽는다
-- `results.jsonl` — 기기에서 `adb pull`로 회수한 벤치 레코드 누적본
+- `results.jsonl` — 기기에서 `adb pull`로 회수한 벤치 레코드 누적본(정량 지표)
+- `responses.jsonl` — 같은 회차의 **답변 본문** 누적본. `run_id`로 `results.jsonl`과 조인한다(관계형의 FK). LoRA 품질 평가의 재료 — 자세한 건 아래 "생성 길이와 응답 수집" 절
 
 **⚠️ `app/src/main/cpp/llama.cpp/`** — vendored 소스. **용량 때문에 git 미추적**(.gitignore). 빌드 전 별도로 채워야 함. 여기 파일은 읽지도 편집하지도 말 것(검색 시 노이즈의 원인).
 
@@ -150,7 +154,7 @@ unsloth/gemma-4-E2B-it  ──FastModel + LoRA(r=16, 텍스트 전용)──▶ 
 > ⚠️ app레벨 `tokenCount`는 화면에 flush된 조각 수(UTF-8 버퍼링 영향)라 정확한 모델 토큰 수와 다를 수 있음 → **"체감값(perceived)"**으로 취급. 리포트에 "tok/s"라고만 쓰지 말고 체감값임을 명시할 것. 정확한 수치가 필요하면 같은 레코드의 엔진레벨 필드(`decode_tokens`/`engine_tok_s`)를 쓸 것.
 
 **측정 조건 통제 (두 엔진 공통)** — 조건이 다르면 위 숫자를 나란히 놓을 수 없다:
-- **생성 상한 `DEFAULT_MAX_TOKENS = 256`**(`InferenceEngine.kt`). 길이를 고정 안 하면 KV 캐시가 길어질수록 decode가 느려져서 '답이 길어진 것'과 '엔진이 느린 것'이 안 갈린다. 레코드의 `max_tokens` 필드로 사후 검증 가능. ⚠️ 상한 정확도는 다르다 — llama.cpp는 네이티브 루프가 모델 토큰을 정확히 세고, LiteRT-LM은 API에 상한이 없어 **콜백 횟수로 근사해 `cancelProcess()`로 끊는다**(콜백 1회 ≠ 토큰 1개)
+- **생성 상한 `DEFAULT_MAX_TOKENS = 1024`**(`InferenceEngine.kt`). **예전엔 256이었고 그건 진짜 '통제'였다** — 하지만 그 목적은 llama.cpp vs LiteRT 엔진 비교의 공정성이었고, 그 축이 끝난 지금은 답변을 문장 중간에서 자르는 부작용만 남는다. 자세한 근거와 되돌리는 법은 아래 "생성 길이와 응답 수집" 절. 회차 조건은 여전히 레코드의 `max_tokens` 필드로 사후 검증 가능. ⚠️ 상한 정확도는 다르다 — llama.cpp는 네이티브 루프가 모델 토큰을 정확히 세고, LiteRT-LM은 API에 상한이 없어 **콜백 횟수로 근사해 `cancelProcess()`로 끊는다**(콜백 1회 ≠ 토큰 1개. 실측: `token_count` 256일 때 `decode_tokens` 284)
 - **greedy 샘플링 고정**: llama.cpp `llama_sampler_init_greedy()` ↔ LiteRT `SamplerConfig(topK=1)`. 확률적 샘플링은 회차마다 길이가 달라져 노이즈가 되고, 특히 llama.cpp의 `LLAMA_DEFAULT_SEED`는 '매번 새 시드'라 재현조차 안 됐다. **둘 중 한쪽만 바꾸면 공정성이 깨지니 항상 짝으로** 고칠 것
 
 **자원레벨 (`HardwareStats.kt` → `BenchmarkRunner`가 기록, JSONL 저장)** — 인앱 API로 회차마다 읽어 같은 레코드에 통합. 엔진 무관 OS 지표:
@@ -163,7 +167,52 @@ unsloth/gemma-4-E2B-it  ──FastModel + LoRA(r=16, 텍스트 전용)──▶ 
 
 ⚠️ **잠금 화면/화면 꺼짐 상태에서 잰 값은 쓰지 말 것.** adb 자동 실행은 잠긴 기기에서도 돌아가지만, CPU 거버너가 내려앉아 같은 모델·같은 프롬프트가 2.4 tok/s와 16.5 tok/s로 갈렸다(2026-07-31 실측). 정식 측정은 화면을 켜고 잠금 해제한 상태에서(`FLAG_KEEP_SCREEN_ON`이 앱이 떠 있는 동안 꺼짐을 막아준다).
 
-**LoRA 단계에서 새로 필요해진 것: 품질 측정.** 속도·자원 지표만으로는 LoRA를 평가할 수 없다 — LoRA는 *빠르게* 만드는 게 아니라 *도슨트답게* 만드는 작업이라, 오히려 속도는 대조군과 같게 나오는 게 정상이다(가중치가 병합돼 구조가 동일). 그러니 **대조군 vs LoRA본의 답변 품질**을 별도로 재야 하며, `BenchmarkRecord`의 `lora` 필드가 그 자리다(현재 null). 방법론은 미정 — LLM-judge, 도슨트 화법 준수율, groundedness 등이 후보.
+**LoRA 단계에서 새로 필요해진 것: 품질 측정.** 속도·자원 지표만으로는 LoRA를 평가할 수 없다 — LoRA는 *빠르게* 만드는 게 아니라 *도슨트답게* 만드는 작업이라, 오히려 속도는 대조군과 같게 나오는 게 정상이다(가중치가 병합돼 구조가 동일). 그러니 **대조군 vs LoRA본의 답변 품질**을 별도로 재야 한다. **재료는 2026-08-02부터 `responses.jsonl`로 자동 수집된다**(아래 절). 채점 방법론은 아직 미정 — LLM-judge, 도슨트 화법 준수율, groundedness 등이 후보. `BenchmarkRecord`의 `lora` 필드(현재 null)가 점수를 되먹일 자리.
+
+## 생성 길이와 응답 수집 (2026-08-02)
+
+**예전엔 생성된 답변을 그냥 버렸다.** `BenchmarkOutcome.text`에 담겨 있었는데 아무도 안 읽었다 — 속도만 재던 시절엔 맞는 설계였지만, LoRA 품질 평가에는 그게 유일한 재료다. 이제 `BenchmarkLogger.append`가 `results.jsonl`(정량)과 `responses.jsonl`(본문)에 **같은 `run_id`로** 나눠 쓴다. 관계형으로 치면 `run_id`가 FK다.
+
+**같이 `max_tokens`를 256 → 1024로 올렸다.** 두 변경은 한 세트다 — 상한에 걸려 문장 중간에서 잘린 답변은 품질 평가에 못 쓴다. 07-31 실측에서 **3개 프롬프트 중 2개가 잘려 있었다**(`token_count` 256 = 상한 도달).
+
+**"속도 통제를 포기한 것 아닌가"에 대한 답** — 지표마다 길이 민감도가 다르다:
+
+| 지표 | 출력 길이 의존 | 근거 |
+|---|---|---|
+| `ttft`, `prefill_tok_s` | **무관** (원리적으로 입력만의 함수) | 07-31 실측: 출력이 139든 284든 ttft 3.62~3.65로 동일 |
+| `engine_tok_s` | 이론상 의존(KV 성장) | 실측: 139토큰 14.67 vs 284토큰 14.62~14.66 → **차이 0.3%, 노이즈 이하** |
+| `latency` | 의존 (당연) | 이제야 '완결된 답변까지 걸리는 실제 시간'이라 리포트 가치가 생김 |
+
+즉 이 작동 범위(프롬프트 ~420토큰, 출력 수백 토큰)에선 KV 성장 감속이 측정 노이즈보다 작다. 게다가 지금 축은 LoRA본 vs 대조군 — **아키텍처·양자화가 동일**해서 decode 속도가 다를 이론적 이유가 없다. 통제 대신 **사후 통제(post-hoc control)** 를 쓴다: x축 `decode_tokens` / y축 `engine_tok_s` 산점도에 두 모델을 같이 찍어 **같은 곡선 위에 겹치는지**로 "속도는 동일하다"를 보인다. 통제해 버리면 길이-속도 관계 자체를 못 보므로 정보가 오히려 는다.
+
+**길이를 다시 고정하려면 소스가 아니라 인텐트로** — `--ei maxtokens 256`(재빌드 불필요, `run-benchmarks.ps1`은 `$maxTokens` 변수). 그러면 07-31 회차와 조건이 일치해 이어 붙일 수 있다(그 이전 데이터는 상한 도달 회차가 버려지던 버그 때문에 못 씀).
+
+⚠️ **단 되돌려도 응답 수집은 계속 켜져 있다** — capped 회차의 잘린 응답이 `responses.jsonl`에 쌓인다. 조건부로 끄지 말 것(경로가 갈라지면 서서히 어긋난다). 대신 **`max_tokens` 필드로 필터**하면 된다 — 그래서 그 필드를 응답 쪽에도 넣어 뒀다. 오염이 아니라 라벨링된 데이터로 다루는 게 원칙이다.
+
+⚠️ **상한을 완전히 없애지 말 것.** 폭주 시 `GEN_TIMEOUT_MS`(5분)에 걸려 `record == null`이 되고 그 회차가 통째로 사라진다 — 07-31 편향 사건과 같은 실패 모양이다. 1024는 CPU 14.7 tok/s 기준 약 70초라 타임아웃까지 여유가 크다.
+
+⚠️ **`--ei maxtokens`는 Suite 경로에만 걸린다.** 수동 Generate 버튼은 `maxTokens`를 안 넘겨 `DEFAULT_MAX_TOKENS`를 따라가므로 바꾸려면 재빌드가 필요하다. 버튼은 스모크 테스트용이지 정식 측정용이 아니라 그대로 뒀다.
+
+### 평가 언어 — 한국어로 재야 한다 (2026-08-02)
+
+**LoRA는 한국어 도슨트 문답 100건으로 학습했는데 벤치 프롬프트는 영어였다.** 첫 무제한 실행(6건)이 그 어긋남을 그대로 보여줬다:
+
+| | 대조군 | LoRA본 |
+|---|---|---|
+| `decode_tokens` | 583 / 659 / 139 (평균 460) | 188 / 55 / 97 (평균 **113**) |
+| `engine_tok_s` | 16.35 / 15.45 / 14.60 | 16.05 / 16.14 / 16.22 |
+| 형식 | `##` 헤더 + 불릿 + bold | 산문 문단 |
+
+- **전이된 것**: 길이(4배 감소), 형식(마크다운 → 산문), 톤. 대조군은 *문서를 요약하는 조수* 말투("The provided text describes…", "Historical Implication:")인데 LoRA본은 작품을 그냥 서술한다
+- **전이 안 된 것**: **도슨트 화법 자체.** 학습 데이터의 핵심인 관찰 유도("먼저 발밑의 카펫을 한번 보시겠어요?" → "이제 인물들의 크기를 비교해 보세요")가 영어 답변 6건 어디에도 없다. 화법은 언어에 붙어 있어 교차언어 전이가 안 된다
+- **속도는 겹친다** — 예측대로고 "LoRA가 속도를 안 망쳤다"는 확인
+
+그래서 `DEFAULT_PROMPTS`를 한국어로 바꿨다. 시스템 프롬프트(`art_metadata.json`)는 영어 그대로 두는데, **학습 데이터의 `meta`도 영어였으므로 '영어 근거 → 한국어 도슨트 답변'이라는 조건까지 학습 때와 같아진다.** Gemma는 다국어라 대조군도 한국어로 답해 공정 비교가 성립한다.
+
+**같은 실행에서 드러난 품질 문제 3가지** (품질 지표를 설계할 때의 출발점):
+1. **앵무새(parroting)** — 두 모델 다 `art_metadata.json`의 description을 그대로 복창한다("the last, most famous, and most effective of Holbein's great religious works…"). 특히 LoRA본의 한 회차는 55토큰짜리 한 문장으로 그 줄만 되풀이하고 끝냈다 — 짧아진 게 항상 좋은 건 아니라는 신호
+2. **사실 오류** — 대조군이 〈암굴의 성모〉를 **카라바조** 작으로 적었다(레오나르도다). 학습 데이터 첫 줄엔 같은 작품에 대해 "레오나르도의 〈암굴의 성모〉"라고 올바르게 적혀 있다
+3. **퇴화** — `"sculpted" (or "sculpted")` 처럼 같은 단어를 괄호로 되풀이하는 회차가 있다
 
 ## 빌드 / 실행
 
@@ -192,6 +241,8 @@ adb push gemma-4-E2B-it-docent-lora-int4.litertlm /sdcard/Android/data/com.examp
 adb shell am start -S -n com.example.airis/.MainActivity -e model gemma-4-E2B-it-int4.litertlm -e autorun suite --ei repeats 5
 ```
 
+길이를 고정한 조건에서 속도만 다시 재려면 `--ei maxtokens 256`을 덧붙인다(재빌드 불필요). 안 붙이면 앱 기본값 = 자연 종료까지.
+
 `-S`가 프로세스를 강제 재시작하므로 모델마다 조건이 같다. 끝나면 `BenchSignal`이 신호를 남긴다 — **스크립트는 앱을 띄우기 전에 `adb shell rm -f .../benchmarks/last_run.txt`로 지우고, 그 파일이 다시 생길 때까지 폴링**하면 된다:
 
 ```powershell
@@ -200,13 +251,27 @@ adb shell cat /sdcard/Android/data/com.example.airis/files/benchmarks/last_run.t
 
 `SUITE_DONE saved=N model=... backend=...` / 실패면 `SUITE_FAILED reason=...` 또는 `MODEL_NOT_FOUND name=...`(같은 줄이 logcat `AirisBench` 태그에도 나옴). ⚠️ 기기 화면이 잠겨 있으면 `am start`가 막힌다.
 
-**벤치 결과 회수** (기기 → 컴퓨터):
+**벤치 결과 회수** (기기 → 컴퓨터). **두 파일은 `run_id`로 짝지어진 한 쌍이라 항상 같이 받는다** — 따로 받으면 시점이 어긋나 짝 없는 행이 생긴다:
 
 ```powershell
 adb pull /sdcard/Android/data/com.example.airis/files/benchmarks/results.jsonl .
 ```
 
-`benchmark_results/`(로컬 회수 폴더)는 데이터라 `.gitignore` 처리됨 — 커밋 대상 아님.
+```powershell
+adb pull /sdcard/Android/data/com.example.airis/files/benchmarks/responses.jsonl .
+```
+
+`benchmark_results/`(로컬 회수 폴더)는 데이터라 `.gitignore` 처리됨 — 커밋 대상 아님. 구조는:
+
+```
+benchmark_results/
+  results.jsonl              누적본. 실행할 때마다 append ⚠️ 절대 덮어쓰지 않는다
+  responses.jsonl            〃 (run_id로 results.jsonl과 조인)
+  run_conditions.csv         실행마다 통제한 조건(온도·냉각 대기·저장 건수)
+  runs/<stamp>-*.jsonl       그 실행분만 담긴 불변 원본
+```
+
+⚠️ **`adb pull`을 누적본에 직접 하지 말 것.** 2026-08-02에 그래서 사고가 났다 — 스크립트가 기기 파일은 `results.jsonl.<stamp>`로 백업하면서 정작 로컬 누적본은 pull로 덮어써, 직전 30건이 로컬에서 사라졌다(기기 백업으로 복구). 지금은 `runs/`에 stamp 붙은 이름으로 받은 뒤 누적본에 **바이트 그대로** 이어 붙인다(`Add-ToMaster`). ⚠️ 이어 붙일 때 `Get-Content | Add-Content`를 쓰면 안 된다 — PowerShell 5.1의 `-Encoding utf8`은 파일 생성 시 BOM을 박아 그 줄의 JSON 파싱을 깨고, 기본값(ANSI)은 한글 응답을 깨뜨린다.
 
 ## 작업 시 주의
 
@@ -218,8 +283,10 @@ adb pull /sdcard/Android/data/com.example.airis/files/benchmarks/results.jsonl .
 - 콜백(`onToken` 등)을 위임할 땐 **참조(`onToken`)와 호출(`onToken(it)`)을 구분**할 것. `NativeBridge.generateStreaming(prompt) { onToken }`처럼 참조만 하면 토큰이 UI로 안 옴 → `generateStreaming(prompt, onToken)`으로 전달.
 - **자동화 경로를 따로 만들지 말 것.** adb 자동 실행과 사람이 누르는 버튼은 `loadAndInit`/`runSuiteAndReport`를 공유한다. 자동 실행에만 있는 코드 경로를 새로 파면 둘이 서서히 어긋나서, 무인 측정과 손 측정 결과가 달라진다.
 - **자동 실행에 새 실패 지점을 만들면 `BenchSignal`도 같이 손볼 것.** 신호를 안 남기는 실패는 스크립트 입장에서 '영원한 대기'다.
+- **벤치 결과를 저장하는 새 지점이 생기면 `BenchmarkLogger.append`를 부를 것** — 직접 `results.jsonl`에 쓰지 말 것. `append`가 응답까지 같이 남기므로 두 파일의 1:1이 유지된다(그래서 `response` 인자가 기본값 없는 필수 인자다).
 - 새 엔진 추가 시: `InferenceEngine` 구현(`name` 포함) → `EngineFactory`에 케이스 추가 → `ModelCatalog.extensionFor`에 모델 포맷 추가(`when`이 exhaustive라 컴파일러가 짚어줌). `InferenceScreen`은 엔진 선택 인자 외엔 건드리지 말 것(추상화의 목적).
 - LiteRT-LM 라이브러리 업그레이드 시 **Kotlin 버전 호환** 먼저 확인: 라이브러리가 더 최신 Kotlin으로 빌드되면 프로젝트 Kotlin(`libs.versions.toml`)도 그 이상이어야 함(아니면 `incompatible metadata version` 에러). 라이브러리 API 이름이 헷갈릴 땐 캐시된 aar/jar를 `javap -cp <jar> <FQCN>`으로 직접 뜯어보면 정확(우리가 `Message.text` 대신 `Contents→Content.Text.text`를 이렇게 찾음).
 - **벤치 비교는 한 번에 한 변수만.** 엔진·모델·양자화 레시피·**활성값 정밀도**·백엔드·프롬프트 중 둘 이상이 동시에 달라진 두 레코드를 비교하면 원인 분리가 안 된다. 특히 양자화는 라벨(`int4`)이 같아도 스킴이 다를 수 있으니(2/4/8 혼합 vs `dynamic_wi4_afp32`) 출처를 확인할 것.
+  - ⚠️ **2026-08-02 이전 회차는 프롬프트가 영어다** — 그날 `DEFAULT_PROMPTS`를 한국어로 바꿨으므로 그 전후를 나란히 놓으면 언어라는 변수가 하나 더 낀다. `prompt` 필드를 보면 바로 갈린다. 현재 누적본 36건은 전부 영어 프롬프트(30건은 `max_tokens:256`, 6건은 `1024`)
   - ⚠️ **fp32 회차와 fp16 회차를 같은 축에 놓지 말 것** — 활성값 정밀도가 바뀌면 백엔드(cpu→gpu)까지 딸려 바뀌어 변수가 둘이다. `model` 필드의 `-fp16` 접미사로 갈라 볼 것.
   - ⚠️ **07-26/27의 `gemma-4-E2B-it`(gpu) 레코드를 07-31 우리 변환본(cpu)과 나란히 놓지 말 것** — 그건 Google 공식 파일이라 backend·양자화·파일 구성(vision/audio 인코더, `mtp_drafter` 포함)이 동시에 다르다. LoRA vs 대조군(둘 다 우리 변환, 같은 조건) 비교만 유효하다.

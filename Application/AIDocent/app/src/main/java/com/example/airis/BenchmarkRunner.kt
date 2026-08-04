@@ -22,10 +22,25 @@ object BenchmarkRunner {
     private const val TAG = "BenchmarkRunner"
 
     // 반복 실험용 고정 프롬프트셋. 실험 대상 질문을 바꾸려면 여기만 고치면 된다.
+    //
+    // 2026-08-02에 영어 → 한국어로 바꿨다. LoRA를 한국어 도슨트 문답으로 학습시켰는데
+    // 영어로 물으면 '학습한 것'과 '재는 것'이 어긋난다 — 실측으로 확인된 어긋남이다:
+    // 영어 질문에도 길이(4배 감소)와 형식(마크다운 → 산문)은 전이됐지만,
+    // 학습 데이터의 핵심인 도슨트 화법(관찰 유도: "먼저 발밑의 카펫을 보시겠어요?")은
+    // 한 번도 나타나지 않았다. 화법은 언어에 붙어 있어서 교차언어 전이가 안 된다.
+    // 게다가 실사용(한국 미술관 도슨트 앱)도 한국어다.
+    //
+    // ⚠️ 학습셋(datasets/docent_seeds.jsonl)의 질문 문구를 그대로 쓰면 화법 평가가 아니라
+    //    암기 검증이 된다. 아래 3개는 완전일치 0으로 확인한 held-out이다
+    //    (학습셋엔 "이 그림에 대해 설명해줘", "이 그림에서 뭘 보면 좋을까?" 등이 있다).
+    // ⚠️ 반말인 것도 의도적 — 학습셋 질문이 전부 반말이라 입력 분포를 맞춘 것이다
+    //    (학습 데이터의 형태: 반말 질문 → 존댓말 도슨트 답변).
+    // 시스템 프롬프트(art_metadata.json)는 영어 그대로 둔다. 학습 데이터의 meta도 영어였으니
+    // '영어 근거 → 한국어 답변'이라는 조건까지 학습 때와 같아진다.
     val DEFAULT_PROMPTS = listOf(
-        "Describe this painting.",
-        "What is the historical background of this artwork?",
-        "Why did the artist use this technique?"
+        "이 작품 어떤 그림이야?",
+        "이 그림 어떤 시대에 그려진 거야?",
+        "화가가 왜 이렇게 그린 거야?"
     )
 
     // 배치 기본값. 장치 제작 단계라 축소해 둔 값이고, 정식 측정 땐 repeats를 5+로 올린다.
@@ -145,7 +160,11 @@ object BenchmarkRunner {
             repeat(repeats) { i ->
                 val outcome = runOnce(context, engine, prompt, model, maxTokens)
                 outcome.record?.let { rec ->
-                    withContext(Dispatchers.IO) { BenchmarkLogger.append(context, rec) }
+                    // 정량 지표(rec)와 답변 본문(outcome.text)을 같은 run_id로 함께 남긴다.
+                    // 예전엔 outcome.text를 그냥 버렸다 — 품질 평가의 재료가 사라지던 자리.
+                    withContext(Dispatchers.IO) {
+                        BenchmarkLogger.append(context, rec, outcome.text)
+                    }
                     saved++
                 }
                 done++
