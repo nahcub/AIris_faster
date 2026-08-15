@@ -19,6 +19,11 @@ object BenchSignal {
     fun suiteDone(context: Context, saved: Int, model: String, backend: String) =
         emit(context, "SUITE_DONE saved=$saved model=$model backend=$backend")
 
+    // 캐시 프로브 완료. verdict는 BenchmarkRunner.cacheVerdict가 만든 한 줄
+    // (REUSED / NOT_REUSED / UNKNOWN + 근거 숫자). 회차별 원자료는 logcat의 CACHE_PROBE 줄에 있다.
+    fun probeDone(context: Context, verdict: String, model: String, backend: String) =
+        emit(context, "PROBE_DONE verdict=$verdict model=$model backend=$backend")
+
     fun suiteFailed(context: Context, reason: String) =
         emit(context, "SUITE_FAILED reason=$reason")
 

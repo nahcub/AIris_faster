@@ -103,11 +103,20 @@ fun InferenceScreen(
             if (autoRun.runSuite) {
                 isGenerating = true
                 val saved = runSuiteAndReport(
-                    context, engine, model, autoRun.repeats, autoRun.warmups
+                    context, engine, model,
+                    autoRun.repeats, autoRun.warmups, autoRun.maxTokens
                 ) { done, total, label ->
                     statusText = "🧪 Suite $done/$total ($label)"
                 }
                 statusText = "✅ Suite 완료! results.jsonl에 ${saved}건 저장됨"
+            } else if (autoRun.runCacheProbe) {
+                isGenerating = true
+                val verdict = runCacheProbeAndReport(
+                    context, engine, model, autoRun.maxTokens
+                ) { done, total ->
+                    statusText = "🔍 캐시 프로브 $done/$total"
+                }
+                statusText = "✅ 캐시 프로브 완료\n\n$verdict"
             }
         } catch (e: Exception) {
             Log.e(TAG, "auto run failed", e)
@@ -292,7 +301,7 @@ fun InferenceScreen(
                                                 rec.ttftSec, rec.decodeTokPerSec, rec.totalSec, rec.tokenCount
                                             )
                                             withContext(Dispatchers.IO) {
-                                                BenchmarkLogger.append(context, rec)
+                                                BenchmarkLogger.append(context, rec, outcome.text)
                                             }
                                         }
                                         outcome.timedOut ->
@@ -341,7 +350,8 @@ fun InferenceScreen(
                         coroutineScope.launch {
                             try {
                                 val saved = runSuiteAndReport(
-                                    context, engine, model, repeats = null, warmups = null
+                                    context, engine, model,
+                                    repeats = null, warmups = null, maxTokens = null
                                 ) { done, total, label ->
                                     statusText = "🧪 Suite $done/$total ($label)"
                                 }
@@ -365,6 +375,39 @@ fun InferenceScreen(
                         "🧪 Run Suite (${BenchmarkRunner.DEFAULT_PROMPTS.size} prompts × " +
                                 "${BenchmarkRunner.DEFAULT_REPEATS})"
                     )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // 캐시 프로브: 리셋 없이 연속 질문해서 시스템 프롬프트가 재프리필되는지 본다.
+                // 결과는 results.jsonl에 안 남는다 — 진단이지 측정이 아니다.
+                Button(
+                    onClick = {
+                        val model = selectedModel ?: return@Button
+                        isGenerating = true
+                        generatedText = ""
+                        generationStats = null
+                        coroutineScope.launch {
+                            try {
+                                val verdict = runCacheProbeAndReport(
+                                    context, engine, model, maxTokens = null
+                                ) { done, total ->
+                                    statusText = "🔍 캐시 프로브 $done/$total"
+                                }
+                                statusText = "✅ 캐시 프로브 완료\n\n$verdict"
+                            } catch (e: Exception) {
+                                Log.e(TAG, "cache probe error", e)
+                                statusText = "❌ 프로브 오류: ${e.message}"
+                                BenchSignal.suiteFailed(context, e.message ?: "exception")
+                            } finally {
+                                isGenerating = false
+                            }
+                        }
+                    },
+                    enabled = !isGenerating,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("🔍 캐시 프로브 (리셋 없이 ${BenchmarkRunner.DEFAULT_PROMPTS.size}회 연속)")
                 }
             }
         }
@@ -496,14 +539,35 @@ private suspend fun loadAndInit(
     return InitProgress(modelLoaded = true, sessionInitialized = true, systemPromptDecoded = true)
 }
 
+// 캐시 프로브 실행 + 완료 신호. Suite와 같은 이유로 버튼·자동 실행이 공유한다.
+// 결과는 results.jsonl에 안 남는다(회차가 독립이 아니라서 — runCacheProbe 주석 참고).
+// 판정 한 줄은 BenchSignal로, 회차별 원자료는 logcat CACHE_PROBE 줄로 나간다.
+private suspend fun runCacheProbeAndReport(
+    context: Context,
+    engine: InferenceEngine,
+    model: ModelFile,
+    maxTokens: Int?,
+    onProgress: (done: Int, total: Int) -> Unit
+): String {
+    val rounds = BenchmarkRunner.runCacheProbe(
+        engine = engine,
+        maxTokens = maxTokens ?: DEFAULT_MAX_TOKENS,
+        onProgress = onProgress
+    )
+    val verdict = BenchmarkRunner.cacheVerdict(rounds)
+    BenchSignal.probeDone(context, verdict, model.label, engine.backend)
+    return verdict
+}
+
 // Suite 실행 + 완료 신호. 버튼과 자동 실행이 공유하는 지점이라 버튼 람다 밖에 둔다.
-// repeats/warmups가 null이면 BenchmarkRunner의 기본값을 쓴다(자동화가 --ei로 덮어쓸 수 있음).
+// repeats/warmups/maxTokens가 null이면 기본값을 쓴다(자동화가 --ei로 덮어쓸 수 있음).
 private suspend fun runSuiteAndReport(
     context: Context,
     engine: InferenceEngine,
     model: ModelFile,
     repeats: Int?,
     warmups: Int?,
+    maxTokens: Int?,
     onProgress: (done: Int, total: Int, label: String) -> Unit
 ): Int {
     val saved = BenchmarkRunner.runSuite(
@@ -512,6 +576,7 @@ private suspend fun runSuiteAndReport(
         model = model.label,
         repeats = repeats ?: BenchmarkRunner.DEFAULT_REPEATS,
         warmups = warmups ?: BenchmarkRunner.DEFAULT_WARMUPS,
+        maxTokens = maxTokens ?: DEFAULT_MAX_TOKENS,
         onProgress = onProgress
     )
     BenchSignal.suiteDone(context, saved, model.label, engine.backend)

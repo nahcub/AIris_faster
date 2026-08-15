@@ -71,13 +71,42 @@ data class BenchmarkRecord(
 object BenchmarkLogger {
     private const val TAG = "BenchmarkLogger"
 
-    // 기기의 앱 전용 외부 저장소에 JSONL로 한 줄씩 append.
-    // 경로: /sdcard/Android/data/com.example.airis/files/benchmarks/results.jsonl
-    fun append(context: Context, record: BenchmarkRecord) {
+    // 벤치 1건을 기록한다 — 정량 지표는 results.jsonl, 생성된 답변 본문은 responses.jsonl.
+    //
+    // 두 파일에 쓰는 일을 한 함수 안에 둔 이유: 호출부가 '레코드는 남겼는데 응답은 잊는' 실수를
+    // 할 수 없게 하려고. 저장 지점이 늘어나도 append 하나만 부르면 두 파일이 항상 맞는다.
+    // 덕분에 두 파일의 행 수가 정확히 1:1이 된다(warmup·실패 회차는 애초에 여기 안 온다).
+    //
+    // 경로: /sdcard/Android/data/com.example.airis/files/benchmarks/
+    fun append(context: Context, record: BenchmarkRecord, response: String) {
         val dir = File(context.getExternalFilesDir(null), "benchmarks")
         if (!dir.exists()) dir.mkdirs()
-        val file = File(dir, "results.jsonl")
-        file.appendText(record.toJson().toString() + "\n")
-        Log.d(TAG, "Saved benchmark → ${file.absolutePath}")
+
+        File(dir, "results.jsonl").appendText(record.toJson().toString() + "\n")
+        File(dir, "responses.jsonl").appendText(responseJson(record, response).toString() + "\n")
+
+        Log.d(TAG, "Saved benchmark + response (run_id=${record.runId}) → ${dir.absolutePath}")
     }
+
+    // 응답 본문 1건. run_id가 results.jsonl과 이어 붙이는 조인 키다.
+    //
+    // 필드 선택의 이유:
+    //  - prompt는 results.jsonl에도 있지만 여기 중복해 둔다. 조인 없이 이 파일 하나만으로
+    //    사람/LLM-judge에게 바로 던질 수 있어야 하고, 프롬프트는 짧아서 비용이 없다.
+    //  - max_tokens는 '이 응답이 잘렸을 수 있는가'를 파일만 보고 알 수 있게 한다(self-describing).
+    //    `--ei maxtokens 256` 같은 길이 통제 회차의 응답이 섞여도 필터로 갈라진다.
+    //  - ⚠️ model/engine은 일부러 넣지 않는다. 품질 평가는 블라인드로 해야 하는데
+    //    파일에 모델명이 박혀 있으면 judge 프롬프트를 만들 때 새어 들어간다.
+    //    채점이 끝난 뒤 run_id로 results.jsonl과 조인해 붙이면 된다.
+    //
+    // ⚠️ 반드시 JSONObject로 직렬화할 것 — 응답엔 개행이 잔뜩 들어가는데 문자열을 그냥 붙이면
+    //    'JSONL 한 줄 = 한 레코드' 규약이 깨진다(org.json이 \n으로 escape 해준다).
+    private fun responseJson(record: BenchmarkRecord, response: String): JSONObject =
+        JSONObject().apply {
+            put("run_id", record.runId)
+            put("timestamp", record.timestamp)
+            put("max_tokens", record.maxTokens ?: JSONObject.NULL)
+            put("prompt", record.prompt)
+            put("response", response)
+        }
 }

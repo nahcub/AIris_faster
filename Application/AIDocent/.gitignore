@@ -16,3 +16,6 @@ local.properties
 
 # 벤치마크 산출물(데이터) — 코드 아님, adb pull로 회수하는 결과 파일
 /benchmark_results
+
+# tools/ 파이썬 스크립트 실행 부산물
+__pycache__/
