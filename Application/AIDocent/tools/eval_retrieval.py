@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Phase 2 gate: score candidate embedders on datasets/rag_goldset.jsonl.
 
-See docs/notes/2026-08-13-rag-roadmap.md §3 Phase 2. This runs entirely on the PC —
+See docs/plan/rag-roadmap.md §3 Phase 2. This runs entirely on the PC —
 no app code, no device. If recall@k isn't good enough here, Phase 3 never starts.
 
 What gets varied (one axis at a time, per CLAUDE.md's "one variable at a time"):
@@ -294,7 +294,7 @@ def render_markdown(report: dict) -> str:
 
 def render_failures(report: dict, limit: int) -> str:
     """The questions nobody retrieved. These are the ones to eyeball: a stubborn miss is
-    as likely to be a bad goldset row as a bad embedder (overnight-tasks.md, 결과 절)."""
+    as likely to be a bad goldset row as a bad embedder (docs/notes/2026-08-13-overnight-tasks.md, 결과 절)."""
     misses: dict[str, int] = {}
     for run in report["runs"]:
         for res in run["results"].values():

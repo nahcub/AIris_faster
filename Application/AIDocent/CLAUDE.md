@@ -3,7 +3,7 @@
 ## 이 프로젝트가 무엇인가
 
 온디바이스 미술관 도슨트 앱(AIris)에서 **LLM 추론 파트만 떼어낸 실험용 프로젝트**.
-개선안(엔진 이전, 하드웨어 최적화, LoRA, RAG)을 **측정 가능한 벤치마크로 비교**하는 게 목표다. 전체 계획은 저장소 루트의 `../../PLAN.md` 참고.
+개선안(엔진 이전, 하드웨어 최적화, LoRA, RAG)을 **측정 가능한 벤치마크로 비교**하는 게 목표다. 전체 계획은 `docs/plan/overall-roadmap.md` 참고.
 
 ### 지금 어디까지 왔나 (2026-08-15)
 
@@ -17,11 +17,24 @@
 | 모델 선택 UI + adb 자동화 | **완료(2026-07-31).** `ModelCatalog`/`AutoRunRequest`/`BenchSignal` 추가, 기기에서 수동 선택 화면·자동 Suite 실행 둘 다 검증됨(아래 "모델 파일" 절) |
 | 하드웨어 백엔드 | **원인 규명 완료(2026-08-01), 해법은 업스트림에 막힘.** 회귀가 아니라 **모델 파일이 바뀐 것**이었다 — 우리가 변환한 `.litertlm`은 활성값이 fp32(`dynamic_wi4_afp32`의 `afp32`)라 GPU 델리게이트가 그래프를 거의 못 먹고 `INTERNAL`로 실패, CPU로 강등된다. fp16으로 뽑으면 되는데 `--experimental_use_fp16`은 litert-torch 버그로 변환이 깨지고(가중치는 fp32 강제 로드, 캐시만 fp16 → attention에서 dtype 충돌), `--experimental_use_mixed_precision`이 남은 미검증 후보다. **당분간 CPU로 진행이 합리적** — LoRA 품질 비교는 대조군·LoRA본 둘 다 CPU라 이미 공정하다. 자세한 근거는 `docs/notes/2026-08-01-gpu-fallback-activation-type.md` |
 | LoRA | **진행 중.** 도슨트 화법 LoRA를 Colab에서 학습 → `.litertlm` int4 변환 (아래 Colab 절) |
-| RAG | **Phase 1 완료(08-14), Phase 2 진행 중.** 코퍼스·청크·골드셋이 다 있고(아래 "데이터" 절) PC에서 임베더를 고르는 중이다. 재는 과정에서 **RAG의 담당 범위를 다시 그어야 한다**는 결론이 먼저 나왔다 — 작가·화파 정보는 작품 레코드의 `author`/`school`로 **정확히 조인**되므로 근사 검색으로 처리하면 손해다. 게다가 KV 캐시가 실측으로 재사용돼서(아래 "KV 캐시" 절) 조인은 작품당 1회 비용, RAG는 질문마다 비용이다. 자세한 실측·근거는 `docs/notes/2026-08-15-phase2-retrieval.md`, 계획은 `docs/notes/2026-08-13-rag-roadmap.md` |
+| RAG | **Phase 1 완료(08-14), Phase 2 진행 중.** 코퍼스·청크·골드셋이 다 있고(아래 "데이터" 절) PC에서 임베더를 고르는 중이다. 재는 과정에서 **RAG의 담당 범위를 다시 그어야 한다**는 결론이 먼저 나왔다 — 작가·화파 정보는 작품 레코드의 `author`/`school`로 **정확히 조인**되므로 근사 검색으로 처리하면 손해다. 게다가 KV 캐시가 실측으로 재사용돼서(아래 "KV 캐시" 절) 조인은 작품당 1회 비용, RAG는 질문마다 비용이다. 자세한 실측·근거는 `docs/notes/2026-08-15-phase2-retrieval.md`, 계획은 `docs/plan/rag-roadmap.md` |
 
 ⚠️ **llama.cpp / Qwen3-0.6B는 이제 과거 축이다.** 코드(`LlamaCppEngine`, `native-lib.cpp`, vendored llama.cpp)는 **지우지 않고 남겨뒀지만** 새 작업은 여기서 일어나지 않는다. 남긴 이유는 (1) 이미 뽑은 벤치 수치의 재현 가능성, (2) `InferenceEngine` 추상화가 실제로 두 구현을 견딘다는 증거. 사용자가 명시하지 않는 한 **llama.cpp/GGUF/Qwen 쪽으로 제안을 끌고 가지 말 것.**
 
 여기(`AIDocent`)가 **실제 Gradle 프로젝트 루트**다 (`rootProject.name = "AIris"`, `settings.gradle.kts`/`gradlew`/`.vscode`가 여기 있음). 상위의 `Application/`, `CapstoneProject-1/`은 각각 껍데기 폴더 / git 루트일 뿐이니 작업·빌드는 이 디렉토리 기준으로 한다. **단 LoRA 노트북(`LoRA.ipynb`)만은 git 루트(`CapstoneProject-1/`)에 있다.**
+
+## 문서는 어디에 있나
+
+`docs/`가 역할별로 나뉘어 있다 — **폴더가 규칙이다**(자세히는 `docs/README.md`):
+
+| 폴더 | 무엇 | 고쳐도 되나 |
+|---|---|---|
+| `docs/plan/` | 살아있는 계획 (`overall-roadmap.md`, **`rag-roadmap.md`**) | ✅ 고쳐 쓴다 |
+| `docs/notes/` | 시점 기록 (날짜 붙음) | ❌ 덧붙이기만 |
+| `docs/archive/` | 과거 축(llama.cpp 시절) | — |
+
+**이 파일(CLAUDE.md)이 "지금 상태"의 단일 출처다.** 셋이 어긋나면 여기를 믿는다.
+⚠️ 새 문서를 쓰면 **이 파일의 상태표도 같이 갱신**할 것 — 안 그러면 다음 세션이 그 문서의 존재를 모른다.
 
 ## 실제로 의미 있는 파일 (이것만 보면 됨)
 

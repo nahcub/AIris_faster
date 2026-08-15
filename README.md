@@ -4,7 +4,7 @@
 
 원본 팀 프로젝트(카메라 기반 작품 인식, UI 등)에서 LLM/JNI 관련 코드만 분리했습니다.
 목표는 llama.cpp → LiteRT-LM 이전, 시스템 레벨 하드웨어 최적화, LoRA 파인튜닝, RAG 고도화를
-측정 가능한 벤치마크로 비교하는 것입니다. 자세한 계획은 [`PLAN.md`](PLAN.md) 참고.
+측정 가능한 벤치마크로 비교하는 것입니다. 자세한 계획은 [`docs/plan/overall-roadmap.md`](Application/AIDocent/docs/plan/overall-roadmap.md) 참고.
 
 ## 구성
 
