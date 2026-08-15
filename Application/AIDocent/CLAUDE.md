@@ -5,7 +5,7 @@
 온디바이스 미술관 도슨트 앱(AIris)에서 **LLM 추론 파트만 떼어낸 실험용 프로젝트**.
 개선안(엔진 이전, 하드웨어 최적화, LoRA, RAG)을 **측정 가능한 벤치마크로 비교**하는 게 목표다. 전체 계획은 저장소 루트의 `../../PLAN.md` 참고.
 
-### 지금 어디까지 왔나 (2026-08-02)
+### 지금 어디까지 왔나 (2026-08-15)
 
 **현재 주력은 LiteRT-LM + Gemma 4 E2B + 도슨트 LoRA다.** 앱은 `EngineType.LITE_RT`로 고정돼 있고(`InferenceScreen.kt`). 모델 파일은 더 이상 고정이 아니라 **앱 실행 시 선택 화면에서 고른다**(`ModelCatalog`, 아래 "모델 파일" 절) — 기기엔 `gemma-4-E2B-it-docent-lora-int4.litertlm`(LoRA본)과 `gemma-4-E2B-it-int4.litertlm`(대조군)이 함께 올라가 있다.
 
@@ -17,7 +17,7 @@
 | 모델 선택 UI + adb 자동화 | **완료(2026-07-31).** `ModelCatalog`/`AutoRunRequest`/`BenchSignal` 추가, 기기에서 수동 선택 화면·자동 Suite 실행 둘 다 검증됨(아래 "모델 파일" 절) |
 | 하드웨어 백엔드 | **원인 규명 완료(2026-08-01), 해법은 업스트림에 막힘.** 회귀가 아니라 **모델 파일이 바뀐 것**이었다 — 우리가 변환한 `.litertlm`은 활성값이 fp32(`dynamic_wi4_afp32`의 `afp32`)라 GPU 델리게이트가 그래프를 거의 못 먹고 `INTERNAL`로 실패, CPU로 강등된다. fp16으로 뽑으면 되는데 `--experimental_use_fp16`은 litert-torch 버그로 변환이 깨지고(가중치는 fp32 강제 로드, 캐시만 fp16 → attention에서 dtype 충돌), `--experimental_use_mixed_precision`이 남은 미검증 후보다. **당분간 CPU로 진행이 합리적** — LoRA 품질 비교는 대조군·LoRA본 둘 다 CPU라 이미 공정하다. 자세한 근거는 `docs/notes/2026-08-01-gpu-fallback-activation-type.md` |
 | LoRA | **진행 중.** 도슨트 화법 LoRA를 Colab에서 학습 → `.litertlm` int4 변환 (아래 Colab 절) |
-| RAG | 미착수 |
+| RAG | **Phase 1 완료(08-14), Phase 2 진행 중.** 코퍼스·청크·골드셋이 다 있고(아래 "데이터" 절) PC에서 임베더를 고르는 중이다. 재는 과정에서 **RAG의 담당 범위를 다시 그어야 한다**는 결론이 먼저 나왔다 — 작가·화파 정보는 작품 레코드의 `author`/`school`로 **정확히 조인**되므로 근사 검색으로 처리하면 손해다. 게다가 KV 캐시가 실측으로 재사용돼서(아래 "KV 캐시" 절) 조인은 작품당 1회 비용, RAG는 질문마다 비용이다. 자세한 실측·근거는 `docs/notes/2026-08-15-phase2-retrieval.md`, 계획은 `docs/notes/2026-08-13-rag-roadmap.md` |
 
 ⚠️ **llama.cpp / Qwen3-0.6B는 이제 과거 축이다.** 코드(`LlamaCppEngine`, `native-lib.cpp`, vendored llama.cpp)는 **지우지 않고 남겨뒀지만** 새 작업은 여기서 일어나지 않는다. 남긴 이유는 (1) 이미 뽑은 벤치 수치의 재현 가능성, (2) `InferenceEngine` 추상화가 실제로 두 구현을 견딘다는 증거. 사용자가 명시하지 않는 한 **llama.cpp/GGUF/Qwen 쪽으로 제안을 끌고 가지 말 것.**
 
@@ -35,8 +35,8 @@
   - **수동 버튼과 adb 자동 실행이 같은 헬퍼를 공유**: `loadAndInit`(로드→세션→시스템 프롬프트 체인) / `runSuiteAndReport`(Suite + 완료 신호). 자동화 전용 코드 경로를 따로 두면 둘이 서서히 어긋나므로, 새 동작을 넣을 땐 이 두 함수 안에 넣을 것
   - **모델 교체는 앱 재시작**이 전제(로드는 1회). 자동화도 모델마다 `am start -S`로 새로 띄우므로 측정 조건이 같아진다
 - `ModelCatalog.kt` — **모델 파일을 찾아주는 창구.** `EngineFactory`가 '어떤 엔진'을 고르는 창구였다면 이건 '어떤 모델 파일'. `scan(context, type)`이 `getExternalFilesDir(null)`(= adb push 목적지)에서 엔진에 맞는 확장자만 골라 목록화, `findByName`은 자동화가 준 파일명을 **같은 목록에서** 찾는다(경로를 따로 조립하지 않게). `extensionFor`가 엔진↔포맷 짝(`LITE_RT`↔`litertlm`, `LLAMA_CPP`↔`gguf`)을 코드로 못박는 지점 — `when`이 exhaustive라 엔진이 늘면 컴파일러가 짚어줌
-- `AutoRunRequest.kt` — **adb 무인 실행 진입 규약.** 인텐트 엑스트라(`-e model` / `-e autorun suite` / `--ei repeats` / `--ei warmups` / `--ei maxtokens`) 파싱을 한 곳에 가둔 것. 좌표 탭(`input tap`)은 레이아웃 바뀌면 깨지므로 손잡이는 인텐트다. 엑스트라 없으면 `MANUAL` → 평소의 수동 선택 화면
-- `BenchSignal.kt` — **자동화의 완료 신호.** logcat(`AirisBench` 태그 `SUITE_DONE ...`)과 마커 파일(`benchmarks/last_run.txt`) 양쪽에 같은 한 줄. 스크립트는 파일 폴링이 더 견고하다(logcat 대기는 '앱 시작 전에 걸어놨어야 한다'는 레이스가 있음). ⚠️ `SUITE_FAILED`/`MODEL_NOT_FOUND` 실패 신호를 **반드시** 함께 남길 것 — 안 그러면 스크립트가 영원히 기다린다
+- `AutoRunRequest.kt` — **adb 무인 실행 진입 규약.** 인텐트 엑스트라(`-e model` / `-e autorun suite|cacheprobe` / `--ei repeats` / `--ei warmups` / `--ei maxtokens`) 파싱을 한 곳에 가둔 것. `autorun` 값 `suite`와 `cacheprobe`는 **배타적**이다(프로브는 리셋을 안 해서 같은 실행에 섞으면 Suite 조건이 오염된다). 좌표 탭(`input tap`)은 레이아웃 바뀌면 깨지므로 손잡이는 인텐트다. 엑스트라 없으면 `MANUAL` → 평소의 수동 선택 화면
+- `BenchSignal.kt` — **자동화의 완료 신호.** logcat(`AirisBench` 태그 `SUITE_DONE ...` / 프로브는 `PROBE_DONE verdict=...`)과 마커 파일(`benchmarks/last_run.txt`) 양쪽에 같은 한 줄. 스크립트는 파일 폴링이 더 견고하다(logcat 대기는 '앱 시작 전에 걸어놨어야 한다'는 레이스가 있음). ⚠️ `SUITE_FAILED`/`MODEL_NOT_FOUND` 실패 신호를 **반드시** 함께 남길 것 — 안 그러면 스크립트가 영원히 기다린다
 - `InferenceEngine.kt` — **추론 엔진 계약서(interface)**. `name`(엔진 이름, 벤치 기록용) + `backend`(실제 실행 하드웨어 `"gpu"/"cpu"`, 벤치 기록용) + `loadModel/initSession/setArtwork/decodeSystemPrompt/resetToSystemPrompt/generateStreaming/close`. UI가 바라보는 추상화 지점. **`backend`는 '의도'가 아니라 '실제 로드에 성공한' 값을 보고**해야 라벨이 진실이 됨(GPU 실패→CPU 폴백 시 `"cpu"`). **`setArtwork(artwork: Artwork)`는 `decodeSystemPrompt()` 전에 호출** — 두 엔진이 같은 `Artwork`를 받아 각자 방식으로 system 메시지를 만드는 공통 입구(동등성 보장). 안 부르면 빈 `Artwork()` 기준. `resetToSystemPrompt()`는 벤치 회차 독립을 위해 '시스템 프롬프트만 있는 깨끗한 상태'로 되감기. **`generateStreaming(prompt, maxTokens, onToken)`의 `maxTokens`는 벤치 조건 통제용 생성 상한**(기본 `DEFAULT_MAX_TOKENS = 256`, 같은 파일의 top-level const). ⚠️ **`DEFAULT_MAX_TOKENS`는 2026-08-02에 256 → 1024로 올렸다** — '통제'가 아니라 '안 걸리는 안전망'으로 성격이 바뀌었다(왜인지는 아래 "생성 길이와 응답 수집" 절). 0·음수를 '무제한'으로 쓰면 안 된다(llama.cpp는 1024 폴백, LiteRT는 첫 토큰에서 즉시 취소 — 정반대). **`lastStats(): EngineStats?`는 직전 생성 1회의 엔진레벨 계측**(모델 토큰 기준 ground truth) — 계측을 못 주는 엔진은 기본 구현이 null을 반환하므로 새 엔진이 안 깨진다. 자세한 주의사항은 아래 "현재 측정 중인 성능 지표" 절
 - `LlamaCppEngine.kt` — **(휴면) 과거 축.** `InferenceEngine` 구현체(어댑터), 몸통은 `NativeBridge`에 위임. `name`으로 `"llama.cpp"`, `backend`로 `"cpu"` 보고(arm64 CPU 전용 빌드). `lastStats()`는 `NativeBridge.lastGenerationStats()`가 준 `DoubleArray`를 `EngineStats`로 옮긴다(길이 5 미만이면 null). 지금 앱은 이 경로를 타지 않는다 — 재현·대조용으로만 남겨둠
 - `LiteRtEngine.kt` — `InferenceEngine` 구현체(어댑터). **LiteRT-LM 런타임(`com.google.ai.edge.litertlm`)을 감싸는 층**. JNI 없이 순수 Kotlin(라이브러리가 이미 컴파일된 AAR). `Engine`(모델) + `Conversation`(세션) 구조. 시스템 프롬프트는 `ConversationConfig.systemInstruction`으로 주입, `resetToSystemPrompt`는 대화를 새로 열어 구현(LiteRT-LM엔 명시적 reset 없음). **작품 본문은 `formatArtworkInfo(artwork)`가 `prompt_generate.cpp`의 `formatArtworkInfo()`를 Kotlin으로 1:1 미러링** — ⚠️ 단 llama.cpp는 `<|im_start|>system … <|im_end|>` Qwen 템플릿 태그를 직접 붙이지만 LiteRT-LM은 `systemInstruction` 텍스트를 런타임이 알아서 채팅 템플릿으로 감싸므로, 여기선 태그를 빼고 '본문만' 재현해야 이중 래핑 없이 두 엔진이 논리적으로 같은 system 메시지를 봄, `sendMessageAsync`+`CountDownLatch`로 async 스트리밍을 blocking 계약에 맞춤, ⚠️ **`maxTokens` 상한은 `cancelProcess()`로 스트림을 끊어 구현하는데 LiteRT-LM이 그 응답을 `onDone`이 아니라 `onError(CancellationException)`로 준다** — `capped` 플래그로 구분해 정상 종료로 처리해야 한다(안 하면 `runOnce`가 레코드를 버려서 *상한에 안 걸린 짧은 답변만* `results.jsonl`에 남는 조용한 편향이 생김. 2026-07-31에 발견·수정), 토큰 텍스트는 `Message→Contents→Content.Text.text` 체인으로 추출. `Context` 필요(cacheDir). `name`으로 `"litert-lm"` 보고. **엔진레벨 계측은 `lastStats()`가 `Conversation.getBenchmarkInfo()`(@ExperimentalApi)를 감싼 것** — ⚠️ `loadModel`이 엔진을 만들기 **전에** `ExperimentalFlags.enableBenchmark = true`를 켜야 한다(앱 전역 싱글톤을 `Engine.initialize()`가 한 번만 읽음). 실패해도 예외를 위로 안 던지고 null로 떨어뜨려 app레벨 측정은 계속되게 함. **백엔드 선택은 `loadModel`이 GPU 먼저 시도 → 예외 시 CPU 폴백(`tryLoad` 헬퍼), 실제 성공한 백엔드를 `resolvedBackend`에 담아 `backend`로 보고**(logcat `loaded with backend=...`). ⚠️ **GPU 성공에는 조건이 세 개**고 하나라도 빠지면 조용히 CPU로 강등된다: (1) 매니페스트에 `libOpenCL.so`/`libvndksupport.so` `<uses-native-library>` 선언, (2) 기기가 OpenCL 노출(S25/Adreno는 노출, Tensor G3·일부 중저가칩은 미노출), (3) **모델 파일의 활성값이 fp16**(`.litertlm` 섹션 태그 `prefer_activation_type`). S25에서 GPU 성공 기록(TTFT ~0.15s, tok/s가 CPU 대비 ~2배)은 **Google 공식 `litert-community` 파일 기준**이고, 우리가 fp32로 변환한 파일은 같은 폰에서 실패한다 — 3번이 빠져서다(2026-08-01 실측, `docs/notes/2026-08-01-gpu-fallback-activation-type.md`). Backend는 `Backend.GPU()/CPU()/NPU()`(litertlm의 nested class)
@@ -48,7 +48,7 @@
   - **`append(context, record, response)`가 두 파일에 동시에 쓴다** — 정량 지표는 `results.jsonl`, 답변 본문은 `responses.jsonl`. 한 함수 안에 둔 이유는 호출부가 '레코드는 남겼는데 응답은 잊는' 실수를 못 하게 하려고. 저장 지점이 늘어도 `append` 하나만 부르면 두 파일이 항상 맞고, **행 수가 정확히 1:1**이 된다(warmup·실패 회차는 애초에 여기 안 온다 → 조인이 항상 완전 매칭)
   - `responses.jsonl` 스키마는 `run_id`(조인 키) / `timestamp` / `max_tokens` / `prompt` / `response`. **`prompt`를 중복 저장하는 건 의도적** — 조인 없이 이 파일 하나만으로 사람·LLM-judge에게 던질 수 있어야 한다. **`max_tokens`도 넣어 뒀는데 '이 응답이 잘렸을 수 있는가'를 파일만 보고 알기 위해서다**(self-describing). ⚠️ **`model`/`engine`은 일부러 뺐다 — 품질 평가는 블라인드여야 하고, 파일에 모델명이 박혀 있으면 judge 프롬프트를 만들 때 새어 들어간다.** 채점이 끝난 뒤 `run_id`로 조인해 붙일 것
 - `HardwareStats.kt` — 회차마다 찍는 **OS 자원 지표(RAM·발열) 읽기 헬퍼**(`object`). 엔진 무관 프로세스/기기 지표라 측정 계층(`BenchmarkRunner`)에서만 씀. `peakRssMb`(`/proc/self/status`의 `VmHWM` 파싱, 프로세스 누적 peak RSS), `nativeHeapMb`(`Debug.getNativeHeapAllocatedSize`, llama.cpp/모델 C++ 몫), `batteryTempC`(sticky `ACTION_BATTERY_CHANGED`의 `EXTRA_TEMPERATURE`), `thermalStatus`(`PowerManager.currentThermalStatus`, 스로틀링 단계). 어떤 read든 실패하면 null 반환(측정이 벤치를 안 깨게). **전력은 외부 계측 없이는 근사라 제외, CPU/SoC sysfs 온도는 앱 SELinux로 막혀 배제** — 배터리 온도+thermal status만 실측
-- `BenchmarkRunner.kt` — 측정 실행 계층. `runOnce`(reset→생성→지표 계산 1사이클, 단발/Suite 공유 단위) + `runSuite`(고정 프롬프트셋 × [warmup 폐기 + repeats 기록]). **`DEFAULT_PROMPTS`는 2026-08-02에 영어 → 한국어로 바꿨다** — LoRA를 한국어로 학습시켜 놓고 영어로 재면 화법이 전이 안 돼 핵심 효과를 못 잰다(아래 "생성 길이와 응답 수집" 절). ⚠️ 학습셋 문구를 그대로 쓰면 암기 검증이 되므로 held-out으로 고를 것, **반말인 것도 학습셋 입력 분포에 맞춘 의도**다. `runOnce`가 `Context`를 받아 생성 **직전 온도** / **직후 RAM·온도·thermal**을 `HardwareStats`로 스냅샷하고 `engine.backend`(gpu/cpu)를 레코드에 기입. ⚠️ **엔진레벨 계측(`engine.lastStats()`)은 생성 직후 즉시 회수**한다 — 다음 회차의 `resetToSystemPrompt()`가 세션/대화를 갈아엎으면 값이 사라지기 때문. 기본값 `warmups=1`(콜드스타트 버림) + `repeats=2`(장치 제작 단계라 축소, 정식 측정 땐 5+로) — `DEFAULT_WARMUPS`/`DEFAULT_REPEATS` 상수라 자동화가 `--ei repeats N`으로 덮어쓸 수 있고 Suite 버튼 라벨도 이 값을 따라감
+- `BenchmarkRunner.kt` — 측정 실행 계층. **`runCacheProbe`**(+`ProbeRound`/`cacheVerdict`)는 측정이 아니라 **진단**이다 — 회차마다 리셋하는 `runOnce`와 달리 **리셋 없이** 연속 질문해서 시스템 프롬프트가 재프리필되는지 본다(판정은 `prompt_tokens`의 변화로). ⚠️ 이 회차들은 앞 회차의 문답이 컨텍스트에 남아 **서로 독립이 아니므로 `results.jsonl`에 저장하지 않는다** — 저장하면 그 파일의 '회차 독립' 전제가 조용히 깨진다. 결과는 logcat(`AirisBench` 태그 `CACHE_PROBE`)과 `BenchSignal.probeDone`으로만 나간다. `runOnce`(reset→생성→지표 계산 1사이클, 단발/Suite 공유 단위) + `runSuite`(고정 프롬프트셋 × [warmup 폐기 + repeats 기록]). **`DEFAULT_PROMPTS`는 2026-08-02에 영어 → 한국어로 바꿨다** — LoRA를 한국어로 학습시켜 놓고 영어로 재면 화법이 전이 안 돼 핵심 효과를 못 잰다(아래 "생성 길이와 응답 수집" 절). ⚠️ 학습셋 문구를 그대로 쓰면 암기 검증이 되므로 held-out으로 고를 것, **반말인 것도 학습셋 입력 분포에 맞춘 의도**다. `runOnce`가 `Context`를 받아 생성 **직전 온도** / **직후 RAM·온도·thermal**을 `HardwareStats`로 스냅샷하고 `engine.backend`(gpu/cpu)를 레코드에 기입. ⚠️ **엔진레벨 계측(`engine.lastStats()`)은 생성 직후 즉시 회수**한다 — 다음 회차의 `resetToSystemPrompt()`가 세션/대화를 갈아엎으면 값이 사라지기 때문. 기본값 `warmups=1`(콜드스타트 버림) + `repeats=2`(장치 제작 단계라 축소, 정식 측정 땐 5+로) — `DEFAULT_WARMUPS`/`DEFAULT_REPEATS` 상수라 자동화가 `--ei repeats N`으로 덮어쓸 수 있고 Suite 버튼 라벨도 이 값을 따라감
 
 > **왜 이렇게 나눴나**: 엔진을 갈아끼울 때 UI(`InferenceScreen`)를 안 건드리려고 추상화. **`LiteRtEngine`이 이 추상화 위에서 실제로 추가되면서 검증됨** — `InferenceEngine` 구현 + `EngineFactory` 케이스 한 줄, `InferenceScreen`은 엔진 선택 인자 외엔 안 건드림(엔진이 `name`을 보고하므로 벤치 라벨도 자동으로 따라옴). `.task`(MediaPipe tasks-genai)가 아니라 **`.litertlm`(LiteRT-LM)**을 고른 이유: MediaPipe LLM API는 유지보수 전용으로 동결됐고, LiteRT-LM은 CPU/GPU/NPU를 한 포맷으로 커버한다. 배경/개념 정리는 `docs/notes/2026-07-18-inference-engine-abstraction.md`.
 
@@ -62,6 +62,13 @@
 - `gradle/libs.versions.toml` — **Kotlin 2.3.0** (LiteRT-LM 0.14.0이 Kotlin 2.3으로 컴파일돼 최소 2.3 요구. 옛 2.0.x면 `incompatible metadata version 2.3.0, expected 2.0.0` 에러). Compose 플러그인 버전은 Kotlin 버전을 따라감(`version.ref = kotlin`)
 - `app/src/main/AndroidManifest.xml` — **LiteRT-LM GPU 추론의 전제조건**: `<application>` 안에 `<uses-native-library android:name="libvndksupport.so" android:required="false"/>` + `<uses-native-library android:name="libOpenCL.so" android:required="false"/>` 두 줄이 있어야 함. Android 12+는 벤더 비공개 `.so`(`/vendor/lib64/libOpenCL.so`)를 이 선언 없이는 `dlopen` 못 함 → 없으면 GPU가 `"Can not find OpenCL library"`로 실패. `required="false"`라 OpenCL 없는 기기에서도 설치는 됨(그런 기기는 `LiteRtEngine`이 CPU로 폴백). **이건 기기 정책 장벽이 아니라 앱 매니페스트 문제였음** — S25는 선언만 넣으면 GPU 됨(Google Edge Gallery가 되는 이유도 이 선언을 갖고 있어서)
 - `app/src/main/assets/art_metadata.json` — 작품 메타데이터 21,382점. 시스템 프롬프트 재료이자 LoRA 데이터셋의 근거 자료
+
+**RAG 데이터·도구 (Phase 1 산출물, 커밋됨)**
+- `datasets/rag_sources/` — 코퍼스 원천 3종(작가 26명 위키 전기 / 사조·기법 용어집 / 가상 미술관 안내). ⚠️ 미술관 정보는 지어낸 것이지만 실제 295점의 school×연대 그룹·작가별 카운트와 **정합**하게 만들었다(재큐레이션하면 이 파일도 재생성). 메타 설명은 `rag_sources/README.md`로 분리 — 코퍼스 파일에 섞이면 도슨트가 "이건 가상 데이터입니다"를 답변에 낸다
+- `datasets/rag_chunks.jsonl` — 위 3종을 자른 **60청크**(artist 26 / movement 5 / museum 29). `tools/build_chunks.py`가 생성
+- `datasets/rag_goldset.jsonl` — 검색 평가용 **40문항**(artist 16 / movement 12 / museum 12). `context_artwork`(관람객이 서 있는 작품 id)는 `tools/annotate_goldset_context.py`가 부여 — 질문이 대명사라 지시대상이 없는 문항 때문에 필요하다. ⚠️ `answer_note`는 **한국어 사람용 주석**이라 임베딩·프롬프트 경로에 절대 넣지 말 것
+- `datasets/docent_seeds_en.jsonl` — 학습셋 100건 영어 재작성(로드맵 결정 4). 아직 이걸로 재학습하진 않았다
+- `tools/eval_retrieval.py` — 임베더 × 청크포맷 × 쿼리포맷 × 검색전략 → Recall@1/3/5·MRR을 타입별로. ⚠️ sentence-transformers를 안 쓰고 풀링·L2 정규화를 직접 구현한 건 Phase 3에서 ONNX/Kotlin으로 **같은 산수를 재현**해 cosine>0.999 대조를 해야 하기 때문이다
 
 **데이터 (git 미추적, 코드 아님)**
 - `datasets/docent_seeds.jsonl` — **LoRA 학습 데이터 100건.** `art_metadata.json`의 실제 작품 기록에 근거한 관찰 유도형 도슨트 문답(artwork 50 / artist 25 / movement 25). Colab에선 Drive(`MyDrive/airis_refactoring/`)에서 읽는다
@@ -163,6 +170,22 @@ unsloth/gemma-4-E2B-it  ──FastModel + LoRA(r=16, 텍스트 전용)──▶ 
 
 > ⚠️ 자원레벨 주의: `mem_peak`(VmHWM)은 프로세스 누적 peak라 회차 간 값이 같게 나옴(모델이 메모리 대부분 차지, 정상). 배터리 온도는 반응이 느려 짧은 생성(수 초)엔 전=후로 안 움직임 — **발열 곡선은 긴 부하(연속 Suite/긴 생성)에서만** 관측됨. CPU/SoC 코어 온도까지 원하면 외부 adb 샘플러 별도.
 
+### KV 캐시 — 기록된 TTFT는 "최악 조건"이다 (2026-08-15 실측)
+
+`runCacheProbe`로 **리셋 없이** 3회 연속 질문한 결과(LoRA본, CPU, S25):
+
+```
+round=1  prompt_tokens=425  ttft=2.988s
+round=2  prompt_tokens= 17  ttft=0.654s   ← 질문 토큰만 프리필
+round=3  prompt_tokens= 15  ttft=0.623s
+```
+
+**시스템 프롬프트는 2회차부터 재프리필되지 않는다.** 그런데 `BenchmarkRunner.runOnce`는 회차 독립을 위해 매번 `resetToSystemPrompt()`를 부르므로 **벤치는 항상 1회차 조건으로 잰다**(`results.jsonl` 96건의 `prompt_tokens`가 질문 길이와 무관하게 늘 423~428인 게 그 증거). 통제로는 옳지만:
+
+- ⚠️ **리포트에 "TTFT 3.5초"라고만 쓰면 안 된다.** 그건 *매 질문이 첫 질문일 때*의 값이고, 실사용 2번째 질문부터는 0.65초다. 반드시 구분해서 쓸 것
+- ⚠️ **컨텍스트 비용 구조가 여기서 갈린다.** 작품 인식 시 1회 주입하는 정보(작가 전기·화파 등 조인 결과)는 캐시에 얹혀 **작품당 1회 비용**이지만, 질문마다 달라지는 검색 결과는 캐시 뒤에 붙어 **매 질문 비용**이다. RAG 설계의 핵심 제약(자세히는 `docs/notes/2026-08-15-phase2-retrieval.md` §5)
+- ⚠️ **`engine_ttft`는 멀티턴에서 갱신되지 않는다** — 프로브 3회차 모두 같은 값이었다(LiteRT `getBenchmarkInfo()`가 대화 첫 턴 값을 유지). `prompt_tokens`/`decode_tokens`는 정상. 멀티턴을 재게 되면 app레벨 TTFT를 쓸 것
+
 아직 없음: **전력**(외부 계측 필요), **통계 방법론**(N회↑ → 중앙값/p90). 자원(RAM·발열)·엔진레벨 계측까지 자동 기록되지만 반복 수가 적은 v0 단계 — 반복 수는 이제 재빌드 없이 `--ei repeats N`으로 올릴 수 있다.
 
 ⚠️ **잠금 화면/화면 꺼짐 상태에서 잰 값은 쓰지 말 것.** adb 자동 실행은 잠긴 기기에서도 돌아가지만, CPU 거버너가 내려앉아 같은 모델·같은 프롬프트가 2.4 tok/s와 16.5 tok/s로 갈렸다(2026-07-31 실측). 정식 측정은 화면을 켜고 잠금 해제한 상태에서(`FLAG_KEEP_SCREEN_ON`이 앱이 떠 있는 동안 꺼짐을 막아준다).
@@ -242,6 +265,14 @@ adb shell am start -S -n com.example.airis/.MainActivity -e model gemma-4-E2B-it
 ```
 
 길이를 고정한 조건에서 속도만 다시 재려면 `--ei maxtokens 256`을 덧붙인다(재빌드 불필요). 안 붙이면 앱 기본값 = 자연 종료까지.
+
+**KV 캐시 진단**(측정이 아니라 진단 — `results.jsonl`에 안 남는다):
+
+```powershell
+adb shell am start -S -n com.example.airis/.MainActivity -e model gemma-4-E2B-it-docent-lora-int4.litertlm -e autorun cacheprobe
+```
+
+끝나면 마커가 `PROBE_DONE verdict=REUSED first=425 rest=[17, 15] ...`로 바뀐다. 회차별 원자료는 `adb logcat -d -s AirisBench`의 `CACHE_PROBE` 줄.
 
 `-S`가 프로세스를 강제 재시작하므로 모델마다 조건이 같다. 끝나면 `BenchSignal`이 신호를 남긴다 — **스크립트는 앱을 띄우기 전에 `adb shell rm -f .../benchmarks/last_run.txt`로 지우고, 그 파일이 다시 생길 때까지 폴링**하면 된다:
 

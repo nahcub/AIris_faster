@@ -21,9 +21,13 @@ $ErrorActionPreference = "Stop"
 # ══════════════════════════════════════════════════════════════
 
 $models = @(
-    "gemma-4-E2B-it-int4.litertlm",              # 대조군
-    "gemma-4-E2B-it-docent-lora-int4.litertlm"   # LoRA본
+    "gemma-4-E2B-it-int4.litertlm",   # 우리 변환 (dynamic_wi4_afp32, 활성값 fp32 → CPU)
+    "gemma-4-E2B-it.litertlm"         # Google 공식 litert-community (2/4/8 혼합, fp16 활성값 → GPU)
 )
+# ⚠️ 이 짝은 backend 가 갈린다(cpu vs gpu). 양자화·파일 구성(vision/audio 인코더, mtp_drafter)도
+#    동시에 다르므로 속도 축은 원인 분리가 안 된다 — 응답 품질 비교용으로만 볼 것.
+#    LoRA vs 대조군(둘 다 우리 변환, 같은 조건)을 재려면:
+#      "gemma-4-E2B-it-int4.litertlm", "gemma-4-E2B-it-docent-lora-int4.litertlm"
 
 
 $repeats = 5      # 프롬프트당 기록 회차

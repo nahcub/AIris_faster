@@ -15,9 +15,21 @@ data class BenchmarkOutcome(
     val failed: Boolean
 )
 
+// 캐시 프로브 1회차의 관측값. 저장이 아니라 판정을 위한 것이라 BenchmarkRecord와 별개다.
+data class ProbeRound(
+    val index: Int,
+    val prompt: String,
+    val promptTokens: Int?,      // 이 회차에 엔진이 실제로 프리필한 토큰 수 ← 판정의 핵심
+    val prefillTokPerSec: Double?,
+    val ttftSec: Double,         // app레벨 체감 TTFT
+    val engineTtftSec: Double?,
+    val decodeTokens: Int?
+)
+
 // 측정을 UI에서 분리한 실행 계층.
 // - runOnce: '리셋 → 생성 → 지표 계산' 한 사이클. UI 버튼과 배치 러너가 공유하는 단위.
 // - runSuite: 고정 프롬프트셋 × (warmup + 반복). 여러 번 실험을 위한 진입점.
+// - runCacheProbe: 리셋 '없이' 연속 질문. 시스템 프롬프트가 재프리필되는지 보는 진단.
 object BenchmarkRunner {
     private const val TAG = "BenchmarkRunner"
 
@@ -130,6 +142,85 @@ object BenchmarkRunner {
             timedOut = success == null,
             failed = success == false
         )
+    }
+
+    // KV 캐시 재사용 진단.
+    //
+    // 왜 필요한가: runOnce는 회차 독립을 위해 매번 resetToSystemPrompt()로 대화를 새로 여는데,
+    // LiteRtEngine의 reset은 Conversation을 close/open 하므로 시스템 프롬프트가 매번 다시
+    // 프리필된다. 실제로 results.jsonl 96건에서 prompt_tokens가 질문 길이와 무관하게 늘 423~428
+    // (= 시스템 프롬프트 ~420 + 질문 몇 토큰)이었다. 즉 **벤치 경로는 항상 전액을 낸다.**
+    //
+    // 그런데 실사용은 리셋을 하지 않는다. 그때도 매 질문이 전액을 내는지, 아니면 두 번째 질문부터는
+    // 새 토큰만 프리필하는지에 따라 설계가 갈린다 — 작품 정보를 시스템 프롬프트에 넉넉히 깔아둘 수
+    // 있느냐(조인 방식의 전제)가 여기서 결정된다.
+    //
+    // 그래서 이 함수만 **리셋 없이** 연속으로 질문한다. 판정은 promptTokens의 변화로 한다:
+    //   1회차 ~420 → 2회차 수십      = 캐시 재사용 (새 토큰만 프리필)
+    //   1회차 ~420 → 2회차 ~420 이상 = 재사용 없음 (매번 전부, 또는 대화 누적까지 다시)
+    //
+    // ⚠️ 이 회차들은 서로 독립이 아니다(앞 회차의 문답이 컨텍스트에 남는다). 따라서 results.jsonl에
+    //    저장하지 않는다 — 저장하면 그 파일의 '회차 독립' 전제가 조용히 깨진다. 진단은 logcat과
+    //    반환값으로만 나간다.
+    suspend fun runCacheProbe(
+        engine: InferenceEngine,
+        prompts: List<String> = DEFAULT_PROMPTS,
+        maxTokens: Int = DEFAULT_MAX_TOKENS,
+        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> }
+    ): List<ProbeRound> = withContext(Dispatchers.Default) {
+        // 시작 상태만 한 번 정리한다. 이후로는 절대 리셋하지 않는 게 이 프로브의 전부다.
+        engine.resetToSystemPrompt()
+
+        val rounds = mutableListOf<ProbeRound>()
+        prompts.forEachIndexed { i, prompt ->
+            val startTime = System.currentTimeMillis()
+            var firstTokenTime = 0L
+
+            val success = withTimeoutOrNull(GEN_TIMEOUT_MS) {
+                engine.generateStreaming(prompt, maxTokens) {
+                    if (firstTokenTime == 0L) firstTokenTime = System.currentTimeMillis()
+                }
+            }
+            // runOnce와 같은 이유로 생성 직후 즉시 회수한다.
+            val stats = engine.lastStats()
+
+            if (success != true) {
+                Log.w(TAG, "cache probe round ${i + 1} failed (timeout=${success == null})")
+                return@forEachIndexed
+            }
+
+            val round = ProbeRound(
+                index = i + 1,
+                prompt = prompt,
+                promptTokens = stats?.prefillTokens,
+                prefillTokPerSec = stats?.prefillTokPerSec,
+                ttftSec = if (firstTokenTime > 0L) (firstTokenTime - startTime) / 1000.0 else 0.0,
+                engineTtftSec = stats?.ttftSec,
+                decodeTokens = stats?.decodeTokens
+            )
+            rounds += round
+            // 판정 근거를 회차마다 그대로 남긴다 — verdict는 편의고, 증거는 이 숫자다.
+            Log.i(
+                BenchSignal.TAG,
+                "CACHE_PROBE round=${round.index} prompt_tokens=${round.promptTokens} " +
+                    "prefill_tok_s=${round.prefillTokPerSec} ttft=${round.ttftSec} " +
+                    "engine_ttft=${round.engineTtftSec} decode_tokens=${round.decodeTokens}"
+            )
+            onProgress(i + 1, prompts.size)
+        }
+        rounds
+    }
+
+    // 프로브 결과 한 줄 판정. 2회차 이후의 프리필 토큰이 1회차보다 확연히 적으면 재사용된 것.
+    // 계측을 못 받았으면(엔진이 null) 판정하지 않는다 — 모르는 걸 안다고 하지 않는 게 낫다.
+    fun cacheVerdict(rounds: List<ProbeRound>): String {
+        if (rounds.size < 2) return "UNKNOWN reason=need_2_rounds"
+        val first = rounds[0].promptTokens ?: return "UNKNOWN reason=no_engine_stats"
+        val rest = rounds.drop(1).mapNotNull { it.promptTokens }
+        if (rest.isEmpty()) return "UNKNOWN reason=no_engine_stats"
+        val maxRest = rest.max()
+        return if (maxRest < first / 2) "REUSED first=$first rest=$rest"
+        else "NOT_REUSED first=$first rest=$rest"
     }
 
     // 배치 실험 = prompts × (warmups + repeats).

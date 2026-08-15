@@ -4,6 +4,8 @@
 //   adb shell am start -S -n com.example.airis/.MainActivity \
 //     -e model gemma-4-E2B-it-int4.litertlm -e autorun suite --ei repeats 5
 //
+// autorun 값은 suite | cacheprobe 두 가지다(없으면 로드만 하고 대기).
+//
 // 엑스트라 파싱을 여기 한 곳에 가둬서 Activity/UI가 문자열 키를 흩뿌리지 않게 한다.
 package com.example.airis
 
@@ -12,6 +14,10 @@ import android.content.Intent
 data class AutoRunRequest(
     val modelFileName: String?,  // -e model <파일명>. 없으면 사람이 화면에서 고른다
     val runSuite: Boolean,       // -e autorun suite
+    // -e autorun cacheprobe. KV 캐시 재사용 진단(BenchmarkRunner.runCacheProbe).
+    // Suite와 배타적이다 — 프로브는 리셋을 안 해서 회차가 독립이 아니고, 같은 실행에서 둘을
+    // 섞으면 Suite 쪽 조건이 오염된다.
+    val runCacheProbe: Boolean,
     val repeats: Int?,           // --ei repeats N (없으면 BenchmarkRunner 기본값)
     val warmups: Int?,           // --ei warmups N (0도 유효 — 예열 없이)
     // --ei maxtokens N. 생성 길이 상한을 재빌드 없이 바꾸는 손잡이.
@@ -24,13 +30,15 @@ data class AutoRunRequest(
     val isManual: Boolean get() = modelFileName == null
 
     companion object {
-        val MANUAL = AutoRunRequest(null, false, null, null, null)
+        val MANUAL = AutoRunRequest(null, false, false, null, null, null)
 
         fun from(intent: Intent?): AutoRunRequest {
             val model = intent?.getStringExtra("model") ?: return MANUAL
+            val autorun = intent.getStringExtra("autorun")
             return AutoRunRequest(
                 modelFileName = model,
-                runSuite = intent.getStringExtra("autorun") == "suite",
+                runSuite = autorun == "suite",
+                runCacheProbe = autorun == "cacheprobe",
                 // 엑스트라가 없으면 -1이 오므로 '지정 안 함'(null)으로 접는다.
                 // repeats는 1 이상이어야 의미가 있고, warmups는 0(예열 생략)도 유효한 값이다.
                 repeats = intent.getIntExtra("repeats", -1).takeIf { it > 0 },
