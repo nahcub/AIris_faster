@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build datasets/rag_chunks.jsonl from datasets/rag_sources/*.
 
-Three source files, three chunk types (see docs/notes/2026-08-13-rag-roadmap.md §2-1):
+Three source files, three chunk types (see docs/plan/rag-roadmap.md §2-1):
 
   - artist_bios.jsonl     -> type "artist"    one line = one chunk
   - movement_glossary.md  -> type "movement"  split on "## " headings

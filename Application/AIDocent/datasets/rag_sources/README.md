@@ -7,7 +7,7 @@ know — no meta-commentary about being "fictional," "invented," or "AI-generate
 retrieved chunk ever surfaces text like that in a generated answer, it's a bug: either
 this separation broke, or the chunker pulled from the wrong place.
 
-See `docs/notes/2026-08-13-rag-roadmap.md` (decision 5, §1-2) for why this corpus exists
+See `docs/plan/rag-roadmap.md` (decision 5, §1-2) for why this corpus exists
 instead of re-chunking the original artwork records.
 
 ## What's real vs. invented
@@ -43,4 +43,4 @@ regenerated to match — they're meant to stay consistent with the dataset, not 
 ## Pipeline language
 
 Everything is English per the project's pipeline-language decision
-(`docs/notes/2026-08-13-rag-roadmap.md`, decisions 3-4).
+(`docs/plan/rag-roadmap.md`, decisions 3-4).

@@ -198,7 +198,7 @@ cross-lingual 처리가 아예 필요 없다. 이유: cross-lingual(한국어 �
   Matsys/Massys 등)는 `author` 키 기준 매칭으로 흡수, 26명 전원 매칭 검증 통과
 - ✅ **골드셋 40문항** — `datasets/rag_goldset.jsonl`. type 배분 artist 16 / movement 12 / museum 12,
   chunk_id 전건 유효, Holbein·Cranach 겹침 0, 질문 3~12단어(구어체). 검증 스크립트
-  (`2026-08-13-overnight-tasks.md` 작업 B) 통과
+  (`../notes/2026-08-13-overnight-tasks.md` 작업 B) 통과
 - ✅ **LoRA 학습셋 영어 재작성 100건** — `datasets/docent_seeds_en.jsonl`. Phase 1의 산출물은 아니지만
   결정 4(영어 통일)의 선행 작업이라 같은 밤에 함께 돌렸다. meta 100% 일치, 한글·마크다운 0,
   55~115단어. 표본에서 관찰 유도 문장 살아 있음 확인
@@ -215,7 +215,7 @@ cross-lingual 처리가 아예 필요 없다. 이유: cross-lingual(한국어 �
 - ✅ 메타데이터 필터 하이브리드 — 질문에 작가 이름이 안 나와서 거의 안 걸린다. **조인으로 대체**
 - ⬜ 임베더 1종 확정 — **보류.** 골드셋 artist 16문항이 전부 대명사라 임베더 성능이 아니라
   '작가를 알려줬나'로만 갈린다 → movement·museum 문항 보강 후 재채점
-- **결과 전문: `2026-08-15-phase2-retrieval.md`** (수치·실패한 시도 포함)
+- **결과 전문: `../notes/2026-08-15-phase2-retrieval.md`** (수치·실패한 시도 포함)
 
 > ⚠️ **이 단계에서 아키텍처가 바뀌었다.** 작가·화파·소장위치는 작품 레코드의 `author`/`school`로
 > **정확히 조인**되므로 검색 대상에서 뺀다. 게다가 KV 캐시가 재사용되는 게 실측돼서
